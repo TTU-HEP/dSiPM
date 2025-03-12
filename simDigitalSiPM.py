@@ -3,6 +3,7 @@ import math
 import numpy as np
 import ROOT
 import copy
+import os
 ROOT.gROOT.SetBatch(True)
 ROOT.TH1.SetDefaultSumw2()
 
@@ -26,7 +27,7 @@ def saveHisto(c, hDic, name, drawOpt="", doLog=False):
         #ROOT.gPad.SetLogx()
     else:
         ROOT.gPad.SetLogy(0)
-    c.SaveAs(name+".png")    
+    c.SaveAs("output/"+name+".png")    
 
 def rand(m=0,M=100):
     a = random.uniform(m,M)
@@ -62,6 +63,7 @@ def main():
     input_file = ROOT.TFile("mc_testjob_run001_003_Test_20evt_pi+_100.0_100.0.root", "READ")
     tree = input_file.Get("tree")
     root_file = ROOT.TFile("outfile.root", "RECREATE")
+    os.makedirs("output/", exist_ok=True)
 
     # Define histos
     histos = {}
