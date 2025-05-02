@@ -50,7 +50,7 @@ def main(root_file_path):
     for name, hist in efficiency_hists:
         hist.Write()
         hist.Draw("COLZ")
-        c1.SaveAs(f"{name}.png")
+        c1.SaveAs(f"output/{name}.png")
     out_file.Close()
     print(f"Saved {len(efficiency_hists)} efficiency histograms to efficiencies.root")
 

@@ -70,4 +70,4 @@ legend.Draw()
 canvas.Update()
 
 # Save output if needed
-canvas.SaveAs("overlayed_histograms.png")
+canvas.SaveAs("output/overlayed_histograms.png")
