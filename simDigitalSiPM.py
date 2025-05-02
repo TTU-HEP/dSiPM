@@ -39,6 +39,12 @@ class Photons:
     def t(self, i):
         return self.time_final[i]
 
+class SiPMInfo:
+    def __init__(self, channelSize, nBins):
+        self.channelSize = channelSize #microns
+        self.nBins = nBins
+        self.name = "{0}x{0}".format(int(self.channelSize))
+
 def saveHisto(c, hDic, name, drawOpt="", doLog=False):
     hDic[name].Draw(drawOpt)
     hDic[name].SetStats(0)
@@ -94,47 +100,42 @@ def main():
     histos = {}
 
     nChannels = [
-        #("1x1",     3000), 
-        #("2x2",     1500), 
-        #("5x5",      600), 
-        ("10x10",    300), 
-        ("20x20",    150), 
-        ("25x25",    120), 
-        #("30x30",    100), 
-        #("40x40",     75), 
-        ("50x50",     60), 
-        #("60x60",     50), 
-        ("75x75",     40), 
-        ("100x100",   30), 
-        ("120x120",   25), 
-        #("125x125",   24), 
-        ("200x200",   15),
-        ("300x300",   10),
-        #("600x600",    5),
-        #("3000x3000",  1),
+        #SiPMInfo(   1, 3000), 
+        #SiPMInfo(   2, 1500), 
+        #SiPMInfo(   5,  600), 
+        SiPMInfo(  10,  300), 
+        SiPMInfo(  20,  150), 
+        SiPMInfo(  25,  120), 
+        SiPMInfo(  30,  100), 
+        SiPMInfo(  40,   75), 
+        SiPMInfo(  50,   60), 
+        #SiPMInfo(  60,   50), 
+        #SiPMInfo(  75,   40), 
+        #SiPMInfo( 100,   30), 
+        #SiPMInfo( 120,   25), 
+        #SiPMInfo( 125,   24), 
+        #SiPMInfo( 200,   15),
+        #SiPMInfo( 300,   10),
+        #SiPMInfo( 600,    5),
+        #SiPMInfo(3000,    1),
     ]
 
-    for c in nChannels: histos["nPhotons_xy_{}".format(c[0])] = ROOT.TH2D("nPhotons_xy_{}".format(c[0]),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c[1],-0.05,0.05, c[1],-0.05,0.05)
-    for c in nChannels: histos["nPhotons_xy_oneHit_{}".format(c[0])] = ROOT.TH2D("nPhotons_xy_oneHit_{}".format(c[0]),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c[1],-0.05,0.05, c[1],-0.05,0.05)
-    for c in nChannels: histos["dummy_nPhotons_xy_{}".format(c[0])] = ROOT.TH2D("dummy_nPhotons_xy_{}".format(c[0]),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c[1],-0.05,0.05, c[1],-0.05,0.05)
-    for c in nChannels: histos["dummy_nPhotons_xy_oneHit_{}".format(c[0])] = ROOT.TH2D("dummy_nPhotons_xy_oneHit_{}".format(c[0]),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c[1],-0.05,0.05, c[1],-0.05,0.05)
-    for c in nChannels: histos["nPhotonsPerChannel_{}".format(c[0])] = ROOT.TH1D("nPhotonsPerChannel_{}".format(c[0]),"nPhotonsChannel; nPhotons", 20, 0, 20)
-    for c in nChannels: histos["nPhotonsPerChannel_oneHit_{}".format(c[0])] = ROOT.TH1D("nPhotonsPerChannel_oneHit_{}".format(c[0]),"nPhotonsChannel; nPhotons", 20, 0, 20)
-    #for c in nChannels: histos["nPhotonsPerChannel_time_{}".format(c[0])] = ROOT.TH2D("nPhotonsPerChannel_time_{}".format(c[0]),"nPhotonsChannel; nPhotons; time", 500,0.0,25.0, 20,0,20)
-    for c in nChannels: histos["nPhotons_time_{}".format(c[0])] = ROOT.TH1D("nPhotons_time_{}".format(c[0]),"nPhotons_time; time [ns]; nPhotons", 500,0.0,25.0)
-    for c in nChannels: histos["nPhotons_time_oneHit_{}".format(c[0])] = ROOT.TH1D("nPhotons_time_oneHit_{}".format(c[0]),"nPhotons_time; time [ns]; nPhotons", 500,0.0,25.0)
-    for c in nChannels: histos["nPhotons_time_smear_{}".format(c[0])] = ROOT.TH1D("nPhotons_time_smear_{}".format(c[0]),"nPhotons_time_smear; time [ns]; nPhotons Smear", 500,0.0,25.0)
-    for c in nChannels: histos["signal_time_{}".format(c[0])] = ROOT.TH1D("signal_time_{}".format(c[0]),"signal_time; time [ns]; Amplitude [mV]", 500,0.0,25.0)
+    for c in nChannels: histos["nPhotons_xy_{}".format(c.name)]               = ROOT.TH2D("nPhotons_xy_{}".format(c.name),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c.nBins,-0.05,0.05, c.nBins,-0.05,0.05)
+    for c in nChannels: histos["nPhotons_xy_oneHit_{}".format(c.name)]        = ROOT.TH2D("nPhotons_xy_oneHit_{}".format(c.name),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c.nBins,-0.05,0.05, c.nBins,-0.05,0.05)
+    for c in nChannels: histos["dummy_nPhotons_xy_{}".format(c.name)]         = ROOT.TH2D("dummy_nPhotons_xy_{}".format(c.name),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c.nBins,-0.05,0.05, c.nBins,-0.05,0.05)
+    for c in nChannels: histos["dummy_nPhotons_xy_oneHit_{}".format(c.name)]  = ROOT.TH2D("dummy_nPhotons_xy_oneHit_{}".format(c.name),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c.nBins,-0.05,0.05, c.nBins,-0.05,0.05)
+    for c in nChannels: histos["nPhotonsPerChannel_{}".format(c.name)]        = ROOT.TH1D("nPhotonsPerChannel_{}".format(c.name),"nPhotonsChannel; nPhotons", 20, 0, 20)
+    #for c in nChannels: histos["nPhotonsPerChannel_oneHit_{}".format(c.name)] = ROOT.TH1D("nPhotonsPerChannel_oneHit_{}".format(c.name),"nPhotonsChannel; nPhotons", 20, 0, 20)
+    #for c in nChannels: histos["nPhotonsPerChannel_time_{}".format(c.name)]   = ROOT.TH2D("nPhotonsPerChannel_time_{}".format(c.name),"nPhotonsChannel; nPhotons; time", 500,0.0,25.0, 20,0,20)
+    for c in nChannels: histos["nPhotons_time_{}".format(c.name)]             = ROOT.TH1D("nPhotons_time_{}".format(c.name),"nPhotons_time; time [ns]; nPhotons", 500,0.0,25.0)
+    for c in nChannels: histos["nPhotons_time_oneHit_{}".format(c.name)]      = ROOT.TH1D("nPhotons_time_oneHit_{}".format(c.name),"nPhotons_time; time [ns]; nPhotons", 500,0.0,25.0)
+    for c in nChannels: histos["nPhotons_time_smear_{}".format(c.name)]       = ROOT.TH1D("nPhotons_time_smear_{}".format(c.name),"nPhotons_time_smear; time [ns]; nPhotons Smear", 500,0.0,25.0)
+    for c in nChannels: histos["signal_time_{}".format(c.name)]               = ROOT.TH1D("signal_time_{}".format(c.name),"signal_time; time [ns]; Amplitude [mV]", 500,0.0,25.0)
 
     # Loop over events
     nEvents = 0
     for event in tree:
         nEvents += 1
-        # if nEvents < 7:
-        #     continue
-
-        # if nEvents >= 8: break
-        # # break
 
         gammas = Photons(event)
         print("Total number of photons:", gammas.nPhotons())
@@ -145,21 +146,20 @@ def main():
             y = gammas.y(i)
             z = gammas.z(i)
             t = gammas.t(i)
-            #print(t)
             pF = gammas.productionFiber[i]
             w = gammas.weight[i]
             isCoreC = bool(gammas.isCoreC[i])
             for c in nChannels:
                 if z>0 and isCoreC:
-                    histos["nPhotons_xy_{}".format(c[0])].Fill(x, y, w)
-                    histos["dummy_nPhotons_xy_{}".format(c[0])].Fill(x, y, w)
+                    histos["nPhotons_xy_{}".format(c.name)].Fill(x, y, w)
+                    histos["dummy_nPhotons_xy_{}".format(c.name)].Fill(x, y, w)
                         
                     #Check if bin was hit
-                    b = histos["dummy_nPhotons_xy_oneHit_{}".format(c[0])].FindBin(x, y)
-                    nPhotonsInBin = histos["dummy_nPhotons_xy_oneHit_{}".format(c[0])].GetBinContent(b)
+                    b = histos["dummy_nPhotons_xy_oneHit_{}".format(c.name)].FindBin(x, y)
+                    nPhotonsInBin = histos["dummy_nPhotons_xy_oneHit_{}".format(c.name)].GetBinContent(b)
                     if nPhotonsInBin < 1:
-                        histos["nPhotons_xy_oneHit_{}".format(c[0])].Fill(x, y, w)
-                        histos["dummy_nPhotons_xy_oneHit_{}".format(c[0])].Fill(x, y, w)
+                        histos["nPhotons_xy_oneHit_{}".format(c.name)].Fill(x, y, w)
+                        histos["dummy_nPhotons_xy_oneHit_{}".format(c.name)].Fill(x, y, w)
 
         for i, _ in np.ndenumerate(gammas.pos_final_x):
             x = gammas.x(i)
@@ -171,23 +171,23 @@ def main():
             isCoreC = bool(gammas.isCoreC[i])
             for c in nChannels:
                 if z>0 and isCoreC:
-                    if(hitOneArray(histos["dummy_nPhotons_xy_{}".format(c[0])], x, y) and pF == 0): 
-                        histos["nPhotons_time_{}".format(c[0])].Fill(t, w)
-                        histos["nPhotons_time_oneHit_{}".format(c[0])].Fill(t, w)                    
+                    if(hitOneArray(histos["dummy_nPhotons_xy_{}".format(c.name)], x, y) and pF == 0): 
+                        histos["nPhotons_time_{}".format(c.name)].Fill(t, w)
+                        histos["nPhotons_time_oneHit_{}".format(c.name)].Fill(t, w)                    
         #                 rSiPM = getSiPMResponse(t)
-        #                 histos["nPhotons_time_smear_{}".format(c[0])].Add(rSiPM)
+        #                 histos["nPhotons_time_smear_{}".format(c.name)].Add(rSiPM)
 
         for c in nChannels: 
             # #Make realistic waveform plots
-            # histos["signal_time_{}".format(c[0])] = noise1D(histos["signal_time_{}".format(c[0])])
-            # histos["signal_time_{}".format(c[0])].Add(histos["nPhotons_time_{}".format(c[0])])
-            # temp = copy.deepcopy(histos["nPhotons_time_smear_{}".format(c[0])])
+            # histos["signal_time_{}".format(c.name)] = noise1D(histos["signal_time_{}".format(c.name)])
+            # histos["signal_time_{}".format(c.name)].Add(histos["nPhotons_time_{}".format(c.name)])
+            # temp = copy.deepcopy(histos["nPhotons_time_smear_{}".format(c.name)])
             # temp.Scale(8)
-            # histos["signal_time_{}".format(c[0])].Add(temp)
+            # histos["signal_time_{}".format(c.name)].Add(temp)
 
             # Fill the nPhotons per channel summary histogram
-            h = histos["dummy_nPhotons_xy_{}".format(c[0])]
-            h2 = histos["dummy_nPhotons_xy_oneHit_{}".format(c[0])]
+            h = histos["dummy_nPhotons_xy_{}".format(c.name)]
+            h2 = histos["dummy_nPhotons_xy_oneHit_{}".format(c.name)]
             #print(h.GetEntries())
             for bx in range(1, h.GetXaxis().GetNbins()+1):
                 for by in range(1, h.GetYaxis().GetNbins()+1):
@@ -195,10 +195,10 @@ def main():
                     nPhotonsPerChannel_oneHit = h2.GetBinContent(bx, by)
                     #h.SetBinContent(bx, by, 0)
                     #if nPhotonsPerChannel == 0: continue
-                    histos["nPhotonsPerChannel_{}".format(c[0])].Fill(nPhotonsPerChannel)
-                    histos["nPhotonsPerChannel_oneHit_{}".format(c[0])].Fill(nPhotonsPerChannel_oneHit)
-            histos["dummy_nPhotons_xy_{}".format(c[0])].Reset()
-            histos["dummy_nPhotons_xy_oneHit_{}".format(c[0])].Reset()
+                    histos["nPhotonsPerChannel_{}".format(c.name)].Fill(nPhotonsPerChannel)
+                    #histos["nPhotonsPerChannel_oneHit_{}".format(c.name)].Fill(nPhotonsPerChannel_oneHit)
+            histos["dummy_nPhotons_xy_{}".format(c.name)].Reset()
+            histos["dummy_nPhotons_xy_oneHit_{}".format(c.name)].Reset()
             
     # Draw and save histos
     c1 = ROOT.TCanvas( "c", "c", 800, 700)
@@ -208,13 +208,13 @@ def main():
     ROOT.gPad.SetTopMargin(0.08)
     ROOT.gPad.SetBottomMargin(0.12)
     ROOT.gPad.SetTicks(1,1)
-    for c in nChannels: saveHisto(c1, histos, "nPhotons_xy_{}".format(c[0]), "colz")
-    for c in nChannels: saveHisto(c1, histos, "nPhotons_xy_oneHit_{}".format(c[0]), "colz")
-    for c in nChannels: saveHisto(c1, histos, "nPhotonsPerChannel_{}".format(c[0]),"hist", True)
-    for c in nChannels: saveHisto(c1, histos, "nPhotons_time_{}".format(c[0]),"hist")
-    for c in nChannels: saveHisto(c1, histos, "nPhotons_time_oneHit_{}".format(c[0]),"hist")
-    #for c in nChannels: saveHisto(c1, histos, "nPhotons_time_smear_{}".format(c[0]),"hist")
-    #for c in nChannels: saveHisto(c1, histos, "signal_time_{}".format(c[0]),"hist")
+    for c in nChannels: saveHisto(c1, histos, "nPhotons_xy_{}".format(c.name), "colz")
+    for c in nChannels: saveHisto(c1, histos, "nPhotons_xy_oneHit_{}".format(c.name), "colz")
+    for c in nChannels: saveHisto(c1, histos, "nPhotonsPerChannel_{}".format(c.name),"hist", True)
+    for c in nChannels: saveHisto(c1, histos, "nPhotons_time_{}".format(c.name),"hist")
+    for c in nChannels: saveHisto(c1, histos, "nPhotons_time_oneHit_{}".format(c.name),"hist")
+    #for c in nChannels: saveHisto(c1, histos, "nPhotons_time_smear_{}".format(c.name),"hist")
+    #for c in nChannels: saveHisto(c1, histos, "signal_time_{}".format(c.name),"hist")
 
     # Write everything out
     root_file.Write()
