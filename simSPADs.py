@@ -87,9 +87,11 @@ def main():
         #SiPMInfo(3000,    1),
     ]
 
-    for c in nChannels: histos[        "nPhotons_xyt_all_{}".format(c.name)] = ROOT.TH3D(        "nPhotons_xyt_all_{}".format(c.name),"nPhotons_xy; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins,-0.5,0.5, c.nBins,-0.5,0.5, 700,5.0,40.0)
-    for c in nChannels: histos[     "nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xy; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins,-0.5,0.5, c.nBins,-0.5,0.5, 700,5.0,40.0)
-    for c in nChannels: histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH2D("temp_nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xy; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins,-0.5,0.5, c.nBins,-0.5,0.5)
+    for c in nChannels: histos[        "nPhotons_xyt_all_{}".format(c.name)] = ROOT.TH3D(        "nPhotons_xyt_all_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5, 700,5.0, 40.0)
+    for c in nChannels: histos[        "nPhotons_rte_all_{}".format(c.name)] = ROOT.TH3D(        "nPhotons_rte_all_{}".format(c.name),"nPhotons_rt;  r [mm]; t [ns]; events; nPhotons", 60,0.0,0.5,    700,5.0, 40.0, 100,  0,  100)
+    for c in nChannels: histos[     "nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5, 700,5.0, 40.0)
+    for c in nChannels: histos[     "nPhotons_rte_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_rte_oneHit_{}".format(c.name),"nPhotons_rt;  r [mm]; t [ns]; events; nPhotons", 60,0.0,0.5,    700,5.0, 40.0, 100,  0,  100)
+    for c in nChannels: histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH2D("temp_nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5)
 
     # Loop over events
     nEvents = 0
@@ -104,13 +106,16 @@ def main():
             for c in nChannels:
                 if g.z(i)>0 and bool(g.isCoreC[i]) and g.t(i)>0.0 and g.t(i)<40.0:
                     x, y, t, w = 10*g.x(i), 10*g.y(i), g.t(i), g.w[i]
+                    r = math.sqrt(x**2 + y**2)
                     histos["nPhotons_xyt_all_{}".format(c.name)].Fill(x, y, t, w)          
+                    histos["nPhotons_rte_all_{}".format(c.name)].Fill(r, t, nEvents, w)          
 
                     #Check if bin was hit
                     b = histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].FindBin(x, y)
                     nPhotonsInBin = histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].GetBinContent(b)
                     if nPhotonsInBin < 1:
                         histos["nPhotons_xyt_oneHit_{}".format(c.name)].Fill(x, y, t, w)
+                        histos["nPhotons_rte_oneHit_{}".format(c.name)].Fill(r, t, nEvents, w)
                         histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].Fill(x, y, w)
 
         #Clear temp histos

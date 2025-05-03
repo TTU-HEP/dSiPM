@@ -103,7 +103,7 @@ def makePlots(input_filename, histType):
     out_file.Close()
 
 def main(input_filename):
-    #makePlots(input_filename, "rte")
+    makePlots(input_filename, "rte")
     makePlots(input_filename, "xyt")
 
 if __name__ == "__main__":
