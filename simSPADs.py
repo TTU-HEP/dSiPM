@@ -84,8 +84,8 @@ def main():
         #SiPMInfo( 120,   25), 
         #SiPMInfo( 125,   24), 
         SiPMInfo( 200,   15),
-        #SiPMInfo( 300,   10),
-        #SiPMInfo( 600,    5),
+        SiPMInfo( 300,   10),
+        SiPMInfo( 600,    5),
         #SiPMInfo(3000,    1),
     ]
 
