@@ -57,8 +57,7 @@ def saveHisto(c, hDic, name, drawOpt="", doLog=False):
 
 def main():
     # Some useful hardcoded stuff
-    #input_file = ROOT.TFile("mc_testjob_run001_003_Test_20evt_pi+_100.0_100.0.root", "READ")
-    input_file = ROOT.TFile("mc_testjob_run001_003_Test_20evt_e+_100.0_100.0.root", "READ")
+    input_file = ROOT.TFile("mc_dreamsim_e+_0_run100_0_Test_50evt_e+_100_101.root", "READ")
     tree = input_file.Get("tree")
     root_file = ROOT.TFile("outfile.root", "RECREATE")
     os.makedirs("output/", exist_ok=True)
@@ -77,12 +76,12 @@ def main():
         #SiPMInfo(  40,   75), 
         SiPMInfo(  50,   60), 
         #SiPMInfo(  60,   50), 
-        #SiPMInfo(  75,   40), 
+        SiPMInfo(  75,   40), 
         SiPMInfo( 100,   30), 
         #SiPMInfo( 120,   25), 
         #SiPMInfo( 125,   24), 
-        SiPMInfo( 200,   15),
-        SiPMInfo( 300,   10),
+        #SiPMInfo( 200,   15),
+        #SiPMInfo( 300,   10),
         #SiPMInfo( 600,    5),
         #SiPMInfo(3000,    1),
     ]
@@ -92,6 +91,9 @@ def main():
     for c in nChannels: histos[     "nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5, 700,5.0, 40.0)
     for c in nChannels: histos[     "nPhotons_rte_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_rte_oneHit_{}".format(c.name),"nPhotons_rt;  r [mm]; t [ns]; events; nPhotons", 60,0.0,0.5,    700,5.0, 40.0, 100,  0,  100)
     for c in nChannels: histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH2D("temp_nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5)
+
+    for c in nChannels: histos[       "dummy_nPhotons_xy_{}".format(c.name)] = ROOT.TH2D(       "dummy_nPhotons_xy_{}".format(c.name),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c.nBins,-0.5,0.5, c.nBins,-0.5,0.5)
+    for c in nChannels: histos[      "nPhotonsPerChannel_{}".format(c.name)] = ROOT.TH1D(      "nPhotonsPerChannel_{}".format(c.name),"nPhotonsChannel; nPhotons", 30, 0, 30)
 
     # Loop over events
     nEvents = 0
@@ -109,6 +111,7 @@ def main():
                     r = math.sqrt(x**2 + y**2)
                     histos["nPhotons_xyt_all_{}".format(c.name)].Fill(x, y, t, w)          
                     histos["nPhotons_rte_all_{}".format(c.name)].Fill(r, t, nEvents, w)          
+                    histos["dummy_nPhotons_xy_{}".format(c.name)].Fill(x, y, w)
 
                     #Check if bin was hit
                     b = histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].FindBin(x, y)
@@ -120,6 +123,13 @@ def main():
 
         #Clear temp histos
         for c in nChannels: 
+            # Fill the nPhotons per channel summary histogram
+            h = histos["dummy_nPhotons_xy_{}".format(c.name)]
+            for bx in range(1, h.GetXaxis().GetNbins()+1):
+                for by in range(1, h.GetYaxis().GetNbins()+1):
+                    nPhotonsPerChannel = h.GetBinContent(bx, by)
+                    histos["nPhotonsPerChannel_{}".format(c.name)].Fill(nPhotonsPerChannel)
+            histos["dummy_nPhotons_xy_{}".format(c.name)].Reset()
             histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].Reset()
 
     # Draw and save histos
