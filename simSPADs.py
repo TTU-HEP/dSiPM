@@ -23,6 +23,7 @@ class Photons:
         self.pos_final_x = self.getArrayFromEvent(event.OP_pos_final_x)
         self.pos_final_y = self.getArrayFromEvent(event.OP_pos_final_y)
         self.pos_final_z = self.getArrayFromEvent(event.OP_pos_final_z)
+        self.pos_produced_z = self.getArrayFromEvent(event.OP_pos_produced_z)
         self.w = np.full(self.nPhotons(), 1.0)
 
     def getArrayFromEvent(self, var):
@@ -35,6 +36,8 @@ class Photons:
     def y(self, i):
         return self.pos_final_y[i] + yShift[self.productionFiber[i]]
     def z(self, i):
+        return self.pos_produced_z[i]
+    def zEnd(self, i):
         return self.pos_final_z[i]
     def t(self, i):
         return self.time_final[i]
@@ -80,7 +83,7 @@ def main():
         SiPMInfo( 100,   30), 
         #SiPMInfo( 120,   25), 
         #SiPMInfo( 125,   24), 
-        #SiPMInfo( 200,   15),
+        SiPMInfo( 200,   15),
         #SiPMInfo( 300,   10),
         #SiPMInfo( 600,    5),
         #SiPMInfo(3000,    1),
@@ -88,8 +91,12 @@ def main():
 
     for c in nChannels: histos[        "nPhotons_xyt_all_{}".format(c.name)] = ROOT.TH3D(        "nPhotons_xyt_all_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5, 700,5.0, 40.0)
     for c in nChannels: histos[        "nPhotons_rte_all_{}".format(c.name)] = ROOT.TH3D(        "nPhotons_rte_all_{}".format(c.name),"nPhotons_rt;  r [mm]; t [ns]; events; nPhotons", 60,0.0,0.5,    700,5.0, 40.0, 100,  0,  100)
+    for c in nChannels: histos[        "nPhotons_rze_all_{}".format(c.name)] = ROOT.TH3D(        "nPhotons_rze_all_{}".format(c.name),"nPhotons_rz;  r [mm]; z [mm]; events; nPhotons", 60,0.0,0.5,    500,0.0,2000.0, 100,  0,  100)
+    for c in nChannels: histos[        "nPhotons_tze_all_{}".format(c.name)] = ROOT.TH3D(        "nPhotons_tze_all_{}".format(c.name),"nPhotons_rz;  t [ns]; z [mm]; events; nPhotons", 700,5.0, 40.0, 500,0.0,2000.0, 100,  0,  100)
     for c in nChannels: histos[     "nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5, 700,5.0, 40.0)
     for c in nChannels: histos[     "nPhotons_rte_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_rte_oneHit_{}".format(c.name),"nPhotons_rt;  r [mm]; t [ns]; events; nPhotons", 60,0.0,0.5,    700,5.0, 40.0, 100,  0,  100)
+    for c in nChannels: histos[     "nPhotons_rze_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_rze_oneHit_{}".format(c.name),"nPhotons_rz;  r [mm]; z [mm]; events; nPhotons", 60,0.0,0.5,    500,0.0,2000.0, 100,  0,  100)
+    for c in nChannels: histos[     "nPhotons_tze_oneHit_{}".format(c.name)] = ROOT.TH3D(     "nPhotons_tze_oneHit_{}".format(c.name),"nPhotons_rz;  t [ns]; z [mm]; events; nPhotons", 700,5.0, 40.0, 500,0.0,2000.0, 100,  0,  100)
     for c in nChannels: histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)] = ROOT.TH2D("temp_nPhotons_xyt_oneHit_{}".format(c.name),"nPhotons_xyt; x [mm]; y [mm]; t [ns]; nPhotons", c.nBins    ,-0.5,0.5, c.nBins,-0.5,0.5)
 
     for c in nChannels: histos[       "dummy_nPhotons_xy_{}".format(c.name)] = ROOT.TH2D(       "dummy_nPhotons_xy_{}".format(c.name),"nPhotons_xy; x [cm]; y [cm]; nPhotons", c.nBins,-0.5,0.5, c.nBins,-0.5,0.5)
@@ -106,11 +113,13 @@ def main():
         #Loop over photons in the event
         for i, _ in np.ndenumerate(g.pos_final_x):
             for c in nChannels:
-                if g.z(i)>0 and bool(g.isCoreC[i]) and g.t(i)>0.0 and g.t(i)<40.0:
-                    x, y, t, w = 10*g.x(i), 10*g.y(i), g.t(i), g.w[i]
+                if g.zEnd(i)>0 and bool(g.isCoreC[i]) and g.t(i)>0.0 and g.t(i)<40.0:
+                    x, y, z, t, w = 10*g.x(i), 10*g.y(i), 20*g.z(i) + 2000, g.t(i), g.w[i]
                     r = math.sqrt(x**2 + y**2)
                     histos["nPhotons_xyt_all_{}".format(c.name)].Fill(x, y, t, w)          
                     histos["nPhotons_rte_all_{}".format(c.name)].Fill(r, t, nEvents, w)          
+                    histos["nPhotons_rze_all_{}".format(c.name)].Fill(r, z, nEvents, w)          
+                    histos["nPhotons_tze_all_{}".format(c.name)].Fill(t, z, nEvents, w)          
                     histos["dummy_nPhotons_xy_{}".format(c.name)].Fill(x, y, w)
 
                     #Check if bin was hit
@@ -119,6 +128,8 @@ def main():
                     if nPhotonsInBin < 1:
                         histos["nPhotons_xyt_oneHit_{}".format(c.name)].Fill(x, y, t, w)
                         histos["nPhotons_rte_oneHit_{}".format(c.name)].Fill(r, t, nEvents, w)
+                        histos["nPhotons_rze_oneHit_{}".format(c.name)].Fill(r, z, nEvents, w)
+                        histos["nPhotons_tze_oneHit_{}".format(c.name)].Fill(t, z, nEvents, w)
                         histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].Fill(x, y, w)
 
         #Clear temp histos
