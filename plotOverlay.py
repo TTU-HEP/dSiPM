@@ -53,7 +53,7 @@ for i, hist_name in enumerate(matching_hists):
     if i == 0:
         hist.GetXaxis().SetTitle("NPhotons per channel")
         hist.GetYaxis().SetTitle("Normalized")
-        hist.SetMinimum(1e-6)
+        hist.SetMinimum(1e-8)
         hist.GetXaxis().SetRange(1,15)
         hist.Draw("HIST")
     else:
