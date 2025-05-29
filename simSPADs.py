@@ -58,6 +58,9 @@ def saveHisto(c, hDic, name, drawOpt="", doLog=False):
         ROOT.gPad.SetLogy(0)
     c.SaveAs("output/"+name+".png")    
 
+def getNBins(l,h,s):
+    return int((h - l)/s)
+
 def main():
     # Some useful hardcoded stuff
     input_file = ROOT.TFile("mc_dreamsim_e+_0_run100_0_Test_50evt_e+_100_101.root", "READ")
@@ -68,24 +71,26 @@ def main():
     # Define histos
     histos = {}
 
+    xBinL = -40.0
+    xBinH =  40.0
+
+    print(getNBins(xBinL,xBinH,0.01))
+
     nChannels = [
-        #SiPMInfo(   1, 3000), 
-        #SiPMInfo(   2, 1500), 
-        #SiPMInfo(   5,  600), 
-        SiPMInfo(  10,  300), 
-        #SiPMInfo(  20,  150), 
-        SiPMInfo(  25,  120), 
-        #SiPMInfo(  30,  100), 
-        #SiPMInfo(  40,   75), 
-        SiPMInfo(  50,   60), 
-        #SiPMInfo(  60,   50), 
-        SiPMInfo(  75,   40), 
-        SiPMInfo( 100,   30), 
+        #SiPMInfo(   1, getNBins(xBinL,xBinH,0.001), 
+        #SiPMInfo(  10, getNBins(xBinL,xBinH,0.010)), 
+        SiPMInfo(  20,  getNBins(xBinL,xBinH,0.020)), 
+        SiPMInfo(  30,  getNBins(xBinL,xBinH,0.030)), 
+        SiPMInfo(  40,  getNBins(xBinL,xBinH,0.040)), 
+        SiPMInfo(  50,  getNBins(xBinL,xBinH,0.050)), 
+        SiPMInfo(  60,  getNBins(xBinL,xBinH,0.060)), 
+        SiPMInfo(  70,  getNBins(xBinL,xBinH,0.070)), 
+        SiPMInfo( 100,  getNBins(xBinL,xBinH,0.100)), 
         #SiPMInfo( 120,   25), 
         #SiPMInfo( 125,   24), 
-        SiPMInfo( 200,   15),
-        SiPMInfo( 300,   10),
-        SiPMInfo( 600,    5),
+        #SiPMInfo( 200,   15),
+        #SiPMInfo( 300,   10),
+        #SiPMInfo( 600,    5),
         #SiPMInfo(3000,    1),
     ]
 
