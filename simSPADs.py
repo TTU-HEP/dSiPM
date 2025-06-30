@@ -1,17 +1,33 @@
+import sys
 import random
 import math
 import numpy as np
 import ROOT
 import copy
 import os
+
 ROOT.gROOT.SetBatch(True)
 ROOT.TH1.SetDefaultSumw2()
 
 # xShift = [ 3.2908,  3.2205,  3.3597,  3.2898]
 # yShift = [-3.6878, -3.7287, -3.7284, -3.6075]
 
-xShift = [ 3.8523,  3.8523,  3.8523,  3.8523]
-yShift = [-3.8588, -3.8588, -3.8588, -3.8588]
+xShift = [ 3.7308,  3.5768,  3.8008,  3.6468]
+yShift = [-3.7293, -3.6878, -3.6878, -3.6488]
+
+# (distance_limit_from_center, shift_amount_toward_center)
+shrink_rules = [(0.1 + 0.4 * i, round(0.23 * i, 2)) for i in range(40)]
+
+def shrink_toward_center(val: float) -> float:
+    """
+    Move 'val' toward zero according to the graduated shrink_rules table.
+    """
+    abs_val = abs(val)
+    for limit, shift in shrink_rules:
+        if abs_val <= limit:
+            return val - shift * np.sign(val)
+    # Anything farther than the last limit: apply a constant max-shift (2.0 here)
+    return val - 2.0 * np.sign(val)
 
 class Photons:
     def __init__(self, event):
@@ -35,9 +51,13 @@ class Photons:
     def nPhotons(self):
         return len(self.pos_final_x)
     def x(self, i):
-        return self.pos_final_x[i] + xShift[self.productionFiber[i]]
+        raw_x = self.pos_final_x[i] + xShift[self.productionFiber[i]]
+        return shrink_toward_center(raw_x)
+
     def y(self, i):
-        return self.pos_final_y[i] + yShift[self.productionFiber[i]]
+        raw_y = self.pos_final_y[i] + yShift[self.productionFiber[i]]
+        return shrink_toward_center(raw_y)
+
     def z(self, i):
         return self.pos_produced_z[i]
     def zEnd(self, i):
@@ -68,8 +88,11 @@ def getNBins(l,h,s):
 
 def main():
     # Some useful hardcoded stuff
-    #input_file = ROOT.TFile("mc_dreamsim_pi+_1000_1001.root", "READ")
-    input_file = ROOT.TFile("mc_dreamsim_e+_0_run100_0_FullDetector_10evt_e+_100_101.root", "READ")
+    if len(sys.argv) < 2:
+       print("❌ Error: please provide a ROOT file as argument.")
+       sys.exit(1)
+    input_file_path = sys.argv[1]
+    input_file = ROOT.TFile(input_file_path, "READ")
     tree = input_file.Get("tree")
     root_file = ROOT.TFile("outfile.root", "RECREATE")
     os.makedirs("output/", exist_ok=True)
@@ -119,7 +142,7 @@ def main():
         nEvents += 1
 
         g = Photons(event)
-        if nEvents % 100 == 0:
+        if nEvents % 5 == 0:
             print("Event number: {0} Total number of photons: {1}".format(nEvents, g.nPhotons()))
 
         #Loop over photons in the event
@@ -127,7 +150,7 @@ def main():
         for i, _ in np.ndenumerate(g.pos_final_x):
             x, y, z, t, w = 10*g.x(i), 10*g.y(i), 20*g.z(i) + 2000, g.t(i), g.w[i]
             r = math.sqrt(x**2 + y**2)
-            isCFiber = g.fiberNumber(i) != 0 and bool(g.isCoreC[i])
+            isCFiber = bool(g.isCoreC[i])
             #isCFiber = bool(g.isCoreC[i])
             isGoodPhoton = g.zEnd(i)>0 and g.t(i)>0.0 and g.t(i)<40.0
             if isCFiber and isGoodPhoton:
@@ -149,20 +172,17 @@ def main():
                         histos["nPhotons_tze_oneHit_{}".format(c.name)].Fill(t, z, nEvents, w)
                         histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].Fill(y, x, w)
         #print(nP)
-
         #Clear temp histos
         for c in nChannels: 
             # Fill the nPhotons per channel summary histogram
             h = histos["dummy_nPhotons_xy_{}".format(c.name)]
             for bx in range(1, h.GetXaxis().GetNbins()+1):
-                for by in range(1, h.GetYaxis().GetNbins()+1):
-                    nPhotonsPerChannel = h.GetBinContent(bx, by)
-                    histos["nPhotonsPerChannel_{}".format(c.name)].Fill(nPhotonsPerChannel)
+                 for by in range(1, h.GetYaxis().GetNbins()+1):
+                      nPhotonsPerChannel = h.GetBinContent(bx, by)
+                      histos["nPhotonsPerChannel_{}".format(c.name)].Fill(nPhotonsPerChannel)
             histos["dummy_nPhotons_xy_{}".format(c.name)].Reset()
             histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].Reset()
-        
-        if nEvents == 2:
-            break
+       
 
     # Draw and save histos
     c1 = ROOT.TCanvas( "c", "c", 800, 700)
