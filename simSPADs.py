@@ -4,6 +4,7 @@ import numpy as np
 import ROOT
 import copy
 import os
+
 ROOT.gROOT.SetBatch(True)
 ROOT.TH1.SetDefaultSumw2()
 
@@ -28,6 +29,7 @@ class Photons:
         self.pos_final_z = self.getArrayFromEvent(event.OP_pos_final_z)
         self.pos_produced_z = self.getArrayFromEvent(event.OP_pos_produced_z)
         self.w = np.full(self.nPhotons(), 1.0)
+        self.pos_final_x_shifted, self.pos_final_y_shifted = self.shrink_grid_preserve_spots()
 
     def getArrayFromEvent(self, var):
         return np.array(var)[self.array4Sorting]
@@ -35,9 +37,11 @@ class Photons:
     def nPhotons(self):
         return len(self.pos_final_x)
     def x(self, i):
-        return self.pos_final_x[i] + xShift[self.productionFiber[i]]
+        # return self.pos_final_x[i] + xShift[self.productionFiber[i]]
+        return self.pos_final_x_shifted[i]
     def y(self, i):
-        return self.pos_final_y[i] + yShift[self.productionFiber[i]]
+        # return self.pos_final_y[i] + yShift[self.productionFiber[i]]
+        return self.pos_final_y_shifted[i]
     def z(self, i):
         return self.pos_produced_z[i]
     def zEnd(self, i):
@@ -46,6 +50,20 @@ class Photons:
         return self.time_final[i]
     def fiberNumber(self, i):
         return self.productionFiber[i]
+
+    def shrink_grid_preserve_spots(self, scale=0.5, bin_width=0.2):
+        x_vals = self.pos_final_x + 3.8880
+        y_vals = self.pos_final_y - 3.8730
+
+        x_grid_idx = np.ceil(x_vals / 0.4)
+        y_grid_idx = np.ceil(y_vals / 0.4)
+
+        # x_new = x_vals - 0.0 * x_grid_idx
+        # y_new = y_vals - 0.0 * y_grid_idx
+        x_new = x_vals - 0.17 * x_grid_idx
+        y_new = y_vals - 0.21 * y_grid_idx
+
+        return x_new, y_new
 
 class SiPMInfo:
     def __init__(self, channelSize, nBins):
@@ -77,21 +95,21 @@ def main():
     # Define histos
     histos = {}
 
-    xBinL = -40.0
-    xBinH =  40.0
+    xBinL = -20.0
+    xBinH =  20.0
 
     print(getNBins(xBinL,xBinH,0.01))
 
     nChannels = [
         #SiPMInfo(   1, getNBins(xBinL,xBinH,0.001), 
-        #SiPMInfo(  10, getNBins(xBinL,xBinH,0.010)), 
-        SiPMInfo(  20,  getNBins(xBinL,xBinH,0.020)), 
-        SiPMInfo(  30,  getNBins(xBinL,xBinH,0.030)), 
-        SiPMInfo(  40,  getNBins(xBinL,xBinH,0.040)), 
-        SiPMInfo(  50,  getNBins(xBinL,xBinH,0.050)), 
-        SiPMInfo(  60,  getNBins(xBinL,xBinH,0.060)), 
-        SiPMInfo(  70,  getNBins(xBinL,xBinH,0.070)), 
-        SiPMInfo( 100,  getNBins(xBinL,xBinH,0.100)), 
+        SiPMInfo(  10, getNBins(xBinL,xBinH,0.010)), 
+        # SiPMInfo(  20,  getNBins(xBinL,xBinH,0.020)), 
+        # SiPMInfo(  30,  getNBins(xBinL,xBinH,0.030)), 
+        # SiPMInfo(  40,  getNBins(xBinL,xBinH,0.040)), 
+        # SiPMInfo(  50,  getNBins(xBinL,xBinH,0.050)), 
+        # SiPMInfo(  60,  getNBins(xBinL,xBinH,0.060)), 
+        # SiPMInfo(  70,  getNBins(xBinL,xBinH,0.070)), 
+        # SiPMInfo( 100,  getNBins(xBinL,xBinH,0.100)), 
         #SiPMInfo( 120,   25), 
         #SiPMInfo( 125,   24), 
         #SiPMInfo( 200,   15),
@@ -127,8 +145,8 @@ def main():
         for i, _ in np.ndenumerate(g.pos_final_x):
             x, y, z, t, w = 10*g.x(i), 10*g.y(i), 20*g.z(i) + 2000, g.t(i), g.w[i]
             r = math.sqrt(x**2 + y**2)
-            isCFiber = g.fiberNumber(i) != 0 and bool(g.isCoreC[i])
-            #isCFiber = bool(g.isCoreC[i])
+            # isCFiber = g.fiberNumber(i) != 0 and bool(g.isCoreC[i])
+            isCFiber = bool(g.isCoreC[i])
             isGoodPhoton = g.zEnd(i)>0 and g.t(i)>0.0 and g.t(i)<40.0
             if isCFiber and isGoodPhoton:
                 nP += 1
@@ -161,7 +179,7 @@ def main():
             histos["dummy_nPhotons_xy_{}".format(c.name)].Reset()
             histos["temp_nPhotons_xyt_oneHit_{}".format(c.name)].Reset()
         
-        if nEvents == 2:
+        if nEvents == 1:
             break
 
     # Draw and save histos
