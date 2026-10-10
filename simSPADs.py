@@ -120,13 +120,13 @@ def main():
     # Define histos
     histos = {}
 
-    xBinL = -20.0
-    xBinH =  20.0
+    xBinL = -50.0
+    xBinH =  50.0
 
-    print(getNBins(xBinL,xBinH,0.01))
+    print(8*(getNBins(xBinL,xBinH,0.01)**2)/10**6, "MB per histogram")
 
     nChannels = [
-        #SiPMInfo(   1, getNBins(xBinL,xBinH,0.001), 
+        # SiPMInfo(   5, getNBins(xBinL,xBinH,0.005)), 
         SiPMInfo(  10, getNBins(xBinL,xBinH,0.010)), 
         # SiPMInfo(  20,  getNBins(xBinL,xBinH,0.020)), 
         # SiPMInfo(  30,  getNBins(xBinL,xBinH,0.030)), 
