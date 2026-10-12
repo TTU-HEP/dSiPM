@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -739,3 +740,67 @@ def iter_full_detector_events(
             )
     finally:
         root_file.Close()
+
+
+def iter_full_detector_events_uproot(
+    path: str | Path,
+    *,
+    max_events: int | None = None,
+    gate_ns: tuple[float, float] = (0.0, 40.0),
+    event_index_offset: int = 0,
+    step_size: str = "64 MB",
+) -> Iterator[FullDetectorPhotonEvent]:
+    """Yield full-detector events with uproot instead of PyROOT.
+
+    This reader is intended for HPCC reduction jobs, where uproot and Awkward
+    are available but the ROOT Python bindings are not.  Both readers call the
+    same ``_event_from_tree_entry`` conversion so coordinate localization,
+    photon selection, wavelength reconstruction, and units cannot drift.
+
+    ``event_index_offset`` gives every event in a split production sample a
+    stable sample-global index.  That index also enters the seeded sensor
+    response, preventing repeated random streams when many ROOT files are
+    reduced independently.
+    """
+
+    import awkward as ak
+    import uproot
+
+    source = Path(path).expanduser().resolve()
+    if event_index_offset < 0:
+        raise ValueError("event_index_offset cannot be negative")
+    with uproot.open(source) as root_file:
+        if "tree" not in root_file:
+            raise ValueError(f"ROOT file has no 'tree': {source}")
+        tree = root_file["tree"]
+        branches = set(tree.keys())
+        missing = sorted(REQUIRED_BRANCHES - branches)
+        if missing:
+            raise ValueError(
+                f"ROOT file is missing required branches: {', '.join(missing)}"
+            )
+
+        emitted = 0
+        for arrays in tree.iterate(
+            sorted(REQUIRED_BRANCHES),
+            step_size=step_size,
+            library="ak",
+        ):
+            batch_entries = len(arrays["beamE"])
+            for batch_index in range(batch_entries):
+                if max_events is not None and emitted >= max_events:
+                    return
+                values: dict[str, object] = {}
+                for branch in REQUIRED_BRANCHES:
+                    item = arrays[branch][batch_index]
+                    values[branch] = (
+                        ak.to_numpy(item)
+                        if branch.startswith("OP_")
+                        else ak.to_list(item)
+                    )
+                yield _event_from_tree_entry(
+                    SimpleNamespace(**values),
+                    event_index_offset + emitted,
+                    gate_ns=gate_ns,
+                )
+                emitted += 1

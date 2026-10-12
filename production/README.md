@@ -118,3 +118,35 @@ find /lustre/work/$USER/flash_dreamsim/cpad2026_pilot_100gev \
 Only after all four pilot jobs pass should the matched 5,000-event campaign be
 submitted. Large ROOT files should stay on HPCC; reduce them there to the
 event-level tables and analysis histograms needed locally.
+
+## HPCC reduction environment
+
+The simulation validator uses the existing Python 3.9 environment because it
+is deliberately standalone. The shared `dsipm` analysis package requires
+Python 3.11 or newer. Create its separate, pinned HPCC environment with:
+
+```bash
+/usr/bin/python3.11 -m venv /lustre/work/$USER/flash_dreamsim/analysis-venv-py311
+/lustre/work/$USER/flash_dreamsim/analysis-venv-py311/bin/pip install \
+  -r production/requirements-hpcc-analysis.txt
+```
+
+Once a ROOT file has a valid sidecar, reduce it without copying its photon
+vectors off the cluster:
+
+```bash
+PYTHONPATH=$PWD \
+/lustre/work/$USER/flash_dreamsim/analysis-venv-py311/bin/python \
+  production/reduce_dreamsim_output.py /path/to/file.root \
+  --output-dir /lustre/work/$USER/flash_dreamsim/cpad2026_reduced \
+  --sample eplus_100gev \
+  --event-index-offset 0
+```
+
+Each input produces a compressed event table, additive histogram archive, and
+JSON provenance summary. The event table contains the full pitch/recovery scan,
+the FLASH reference response, the conventional-SiPM proxy, timing quantiles,
+and spatial moments. Histograms retain the incident/detected/accepted/lost
+arrival-time and x-y views plus production-depth timing. The reducer uses the
+same full-detector coordinate and digitization functions as the local plotting
+workflow; only the ROOT reader changes from PyROOT to uproot.

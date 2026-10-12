@@ -125,6 +125,13 @@ local development branch and the HPCC checkout. Each campaign snapshots its
 launcher, validator, and campaign table and records both the dSiPM and DREAMSim
 commits plus file checksums in the manifest and validation sidecars.
 
+Raw production ROOT files remain on HPCC. `production/reduce_dreamsim_output.py`
+uses uproot to apply the same full-detector geometry and sensor-response code
+there, writing compact per-event tables, additive histograms, and provenance
+summaries. `production/merge_dreamsim_reductions.py` checks every reduction
+against the submission manifest before creating the sample-level inputs used
+for local CPAD/JINST plotting.
+
 Start with `production/campaigns/cpad2026_pilot_100gev.tsv`. It produces two
 10-event jobs for both positrons and pions at 100 GeV. The larger
 `cpad2026_one_fiber_5k.tsv` campaign supplies matched 10, 30, 100, and 300 GeV
