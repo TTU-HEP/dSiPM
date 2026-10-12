@@ -128,8 +128,10 @@ commits plus file checksums in the manifest and validation sidecars.
 Start with `production/campaigns/cpad2026_pilot_100gev.tsv`. It produces two
 10-event jobs for both positrons and pions at 100 GeV. The larger
 `cpad2026_one_fiber_5k.tsv` campaign supplies matched 10, 30, 100, and 300 GeV
-samples, but should be submitted only after the pilot and HPCC storage checks
-pass. See `production/README.md` for the exact commands and scientific scope.
+samples. Its energy-dependent job split is based on the validated 100 GeV
+pilot runtime and preserves 5,000 events per particle/energy point with at
+least 25% wall-time margin against the 12-hour job request. See
+`production/README.md` for the exact commands and scientific scope.
 
 The Samuel-pinned DREAMSim source tracks the complete shower but retains
 optical photons only from the central rod. These productions answer the

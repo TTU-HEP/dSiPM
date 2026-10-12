@@ -39,7 +39,11 @@ full detector.
 
 - positrons and pions at 10, 30, 100, and 300 GeV;
 - 5,000 events for every particle/energy point;
-- 100 events per job, following Samuel's demonstrated batch size.
+- an energy-dependent split derived from the validated 100 GeV pilot: 100
+  events/job at 10 and 30 GeV, 25 events/job at 100 GeV, and 10 events/job at
+  300 GeV. This keeps the projected wall time below 75% of the 12-hour request
+  for the slower positron sample while preserving exactly 5,000 events at each
+  point.
 
 Do not submit the 5,000-event campaign until the pilot ROOT files pass
 `validate_dreamsim_output.py` and the HPCC storage estimate has been checked.
