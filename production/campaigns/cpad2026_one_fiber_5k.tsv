@@ -1,0 +1,9 @@
+# sample	particle	energy_gev	jobs	events_per_job
+eplus_10gev	e+	10	50	100
+piplus_10gev	pi+	10	50	100
+eplus_30gev	e+	30	50	100
+piplus_30gev	pi+	30	50	100
+eplus_100gev	e+	100	50	100
+piplus_100gev	pi+	100	50	100
+eplus_300gev	e+	300	50	100
+piplus_300gev	pi+	300	50	100

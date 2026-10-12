@@ -1,0 +1,661 @@
+\documentclass[a4paper,11pt]{article}
+\pdfoutput=1
+
+\usepackage{jinstpub}
+\usepackage{booktabs}
+\usepackage{lineno}
+\usepackage{microtype}
+\renewcommand{\ttdefault}{cmtt}
+
+\graphicspath{{figures/}}
+\linenumbers
+
+\title{\boldmath From single-fiber occupancy to full-detector response:
+digital SiPM requirements for HG-DREAM and FLASH}
+
+% TODO before circulation: confirm the complete author list, ordering,
+% affiliations, corresponding author, and email address.
+\author[a]{C. Madrid}
+\affiliation[a]{Department of Physics and Astronomy, Texas Tech University,\\
+Lubbock, Texas 79409, U.S.A.}
+
+\abstract{FLASH is a digital silicon-photomultiplier concept that replaces
+integrated waveforms with sparse photon counts and timestamps for
+time-resolved optical calorimetry. We report the next stage of a program that
+began with a one-fiber HG-DREAM occupancy study and now supports a funded SLAC
+LDRD prototype effort. An exact reproduction of the earlier analysis revealed
+that its 3 mm segmentation had been applied to a 1 mm fiber-local display
+coordinate, so the labeled pitch acted as a three-times finer physical pitch.
+We retain that result as software closure and repeat the calculation on a
+centered 3$\times$3 mm$^2$ sensor in physical millimeters. The corrected study
+uses 5,000 simulated 100 GeV positron events and 5,000 simulated 1 TeV
+charged-pion events to scan 5--100 $\mu$m pitch, 10--100\% constant
+photon-detection efficiency, and 1, 4.3, and 40 ns recovery. At 20\% PDE and
+4.3 ns recovery, 10, 20, and 25 $\mu$m cells retain 97.93\%, 92.73\%, and
+89.50\% of detected photons in the pion stress sample. The corresponding
+10th-percentile event values are 96.7\%, 90.3\%, and 86.2\%. A simple
+longitudinal timing proxy remains limited by shower and optical-transport
+tails rather than sub-100 ps detector smearing. We then propagate the sensor
+response through available full-detector Cherenkov samples. After electron
+calibration, a representative conventional C-Series SiPM proxy produces a
++9.47\% pion Cherenkov-response shift, compared with +1.67\% for a 20
+$\mu$m, 4.3 ns FLASH point. The comparison establishes a reproducible chain
+from Geant4 photons to detector-level response and converts the prototype
+program into measurable requirements for PDE, recovery, timing response, and
+output policy. Matched-energy samples with explicit Cherenkov and scintillation
+photons remain necessary for a final calorimeter-resolution claim.}
+
+\keywords{Calorimeters; photon detectors; silicon photomultipliers; timing detectors; detector simulation}
+
+\begin{document}
+\maketitle
+\flushbottom
+
+\section{Introduction}
+\label{sec:introduction}
+
+Digital silicon photomultipliers (dSiPMs) combine Geiger-mode avalanche
+photodiodes with local quenching, counting, and timing logic
+\cite{frach2009dsipm}. In a calorimeter, such a sensor could represent the
+optical signal as sparse hit records rather than a continuously sampled analog
+waveform. The FLASH concept targets direct single-photon timestamps at the
+order of 10--50 ps and seeks to preserve spatial and temporal information from
+the optical shower.
+
+The prototype program uses working engineering targets of no more than about
+20 $\mu$m pitch, at least 70\% active-area fill factor, and approximately
+50 ps timing. These are development targets rather than performance values
+established by the present calorimeter study. In particular, physical pitch,
+photosensitive junction size, fill factor, photon-detection probability, and
+the size of the shared timing channel are distinct quantities.
+
+HG-DREAM provides a useful benchmark for this development. It combines dense
+Cherenkov and scintillating fiber readout with fine transverse segmentation
+and a 2 m optical propagation distance \cite{akchurin2025hgdream,feng2026hgdream}.
+The sensor must tolerate bright, localized photon densities, while the fiber
+length provides a timing lever arm for longitudinal shower information. The
+same system also has conventional SiPM energy and waveform readout, providing
+a path to simulation-to-data closure.
+
+The CPAD 2025 study introduced this approach through a one-fiber HG-DREAM
+simulation, reporting occupancy trends versus SPAD size and dead time together
+with an initial timing-based reconstruction study~\cite{wu2025cpad}. The
+present work is the next stage of that program and provides the simulation
+foundation for a funded SLAC Laboratory Directed Research and Development
+effort toward a FLASH prototype.
+
+We first reproduce the earlier occupancy study exactly. The reproduction
+closes to the saved ROOT histograms but exposes a coordinate-convention error:
+the old labeled pitch was not the physical cell width in the DREAMSim
+coordinate system. This distinction materially changes the design conclusion.
+We therefore separate four products throughout the paper:
+\begin{enumerate}
+  \item historical closure, which establishes software provenance;
+  \item a corrected physical sensor scan, which constrains pitch, PDE, and
+  recovery jointly; and
+  \item a first timing-information test, which identifies the next simulation
+  and prototype measurements; and
+  \item a full-detector Cherenkov response comparison between a conventional
+  SiPM proxy and FLASH.
+\end{enumerate}
+
+The two available large samples have different beam energies. We use them as
+occupancy stress cases and do not interpret their difference as a controlled
+electron--pion comparison.
+
+\section{Simulation samples and input audit}
+\label{sec:samples}
+
+The optical photons were produced with an HG-DREAM-like Geant4 simulation
+\cite{geant4}. The analysis selects Cherenkov photons in the fiber core,
+produced in fiber index zero, exiting the downstream end, and arriving in the
+open interval $0<t<40$ ns. The historical fiber-center translation is applied,
+but the resulting detector-plane coordinates remain in physical millimeters.
+The corrected sensor covers $-1.5\leq x,y<1.5$ mm.
+
+Table~\ref{tab:cutflow} reports the sequential cutflow. In these files every
+stored photon already satisfies the valid-fiber, Cherenkov-core, and
+downstream-exit selections. The time gate removes 4,321 photons from the
+positron file and 13,543 photons from the pion file. The centered 3 mm sensor
+contains every selected fiber-zero photon. The selected coordinates span
+approximately $-0.39$ to $+0.40$ mm in each direction, consistent with the
+face of one simulated 0.8 mm fiber.
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:cutflow}Sequential input audit for the two occupancy
+stress samples.}
+\smallskip
+\begin{tabular}{lrr}
+\toprule
+Selection & 100 GeV $e^+$ & 1 TeV $\pi^+$ \\
+\midrule
+Events & 5,000 & 5,000 \\
+Raw optical photons & 2,629,165 & 7,722,345 \\
+Inside 0--40 ns & 2,624,844 & 7,708,802 \\
+Production fiber zero & 649,310 & 1,899,950 \\
+Inside centered 3 mm sensor & 649,310 & 1,899,950 \\
+Median selected photons/event & 127 & 289 \\
+90th percentile photons/event & 173 & 920 \\
+99th percentile photons/event & 222 & 1,484 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:xy} shows the two detector-plane photon distributions on a
+common scale. The pion file has a wider occupancy distribution and reaches a
+maximum of 2,108 selected photons in one fiber. Its higher energy and larger
+event tails make it the more restrictive of the two available stress samples.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{photon_xy_comparison.pdf}
+\caption{\label{fig:xy}Selected photon density at the simulated fiber face for
+the 100 GeV positron sample (left) and 1 TeV pion sample (right). Both panels
+average 5,000 events and use the same color scale. The files have different
+beam energies and are not a particle-species comparison.}
+\end{figure}
+
+\subsection{Coordinate-mapping audit}
+\label{sec:mapping}
+
+The historical study set the number of bins on one axis to
+\begin{equation}
+  N_{\mathrm{bin}}=\frac{3000~\mu\mathrm{m}}{p_{\mathrm{label}}},
+\end{equation}
+where $p_{\mathrm{label}}$ was the pitch printed on the plot. Those bins were
+then applied across a fiber-local coordinate range of only 1 mm,
+$[-0.5,+0.5)$ mm. The implemented cell width was therefore
+\begin{equation}
+  p_{\mathrm{implemented}}=
+  \frac{1~\mathrm{mm}}{N_{\mathrm{bin}}}
+  =\frac{p_{\mathrm{label}}}{3}.
+  \label{eq:scale}
+\end{equation}
+A labelled 25 $\mu$m point behaved like an approximately 8.3 $\mu$m cell in
+physical DREAMSim coordinates.
+
+The revised calculation leaves photon coordinates in millimeters and assigns
+cells directly over the centered 3$\times$3 mm$^2$ sensor. Figure
+\ref{fig:mapping} quantifies the effect. At unity PDE, 25 $\mu$m pitch, and
+4.3 ns recovery, the historical pion result retains 93.24\% of detected
+photons, while the physical mapping retains 65.18\%. The corresponding
+positron values are 98.73\% and 90.51\%. Exact closure of the blue curves is
+still useful, but those curves cannot define a physical FLASH pitch.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{v2_mapping_correction.pdf}
+\caption{\label{fig:mapping}Recovery survival versus labelled pitch with the
+historical display-scaled mapping and with physical millimeter coordinates.
+Both calculations use unity PDE, 4.3 ns recovery, and one Cherenkov fiber.}
+\end{figure}
+
+\section{Sensor-response model}
+\label{sec:model}
+
+For each event, selected photons are sorted by true arrival time. A constant
+PDE value $\epsilon$ is applied with a deterministic per-photon random number,
+so all scan points use common random numbers. Detected photons are assigned to
+square cells of physical pitch $p$. Photons outside the sensor are rejected
+rather than clipped to edge cells.
+
+The recovery model is non-paralyzable. A detected photon $i$ in cell $c$ is
+accepted when
+\begin{equation}
+  t_{i,c}-t^{\mathrm{last}}_c\geq \tau_{\mathrm{rec}},
+  \label{eq:recovery}
+\end{equation}
+where $t^{\mathrm{last}}_c$ is the time of the most recent accepted avalanche.
+A rejected photon does not extend the holdoff. The scan uses pitches of 5, 10,
+15, 20, 25, 30, 40, 50, 75, and 100 $\mu$m; PDE values of 10\%, 20\%, 30\%,
+50\%, and 100\%; and recovery times of 1, 4.3, and 40 ns. The 4.3 ns point
+matches a public Litavis holdoff specification \cite{litavis2026}. The 40 ns
+point approximates one accepted hit per cell in the event gate.
+
+We report two ratios:
+\begin{align}
+  U &= \frac{N_{\mathrm{accepted}}}{N_{\mathrm{incident}}},
+  &
+  S &= \frac{N_{\mathrm{accepted}}}{N_{\mathrm{detected}}}.
+  \label{eq:metrics}
+\end{align}
+The usable fraction $U$ includes PDE loss. Recovery survival $S$ isolates
+repeated-cell loss after detection. Reporting only $S$ can make a low-PDE
+sensor appear artificially robust because photon rejection relieves cell
+collisions. Aggregate confidence intervals use 500 bootstrap resamples of
+complete Geant4 events.
+
+The recovery and cell-assignment code is independent of ROOT input/output and
+has unit tests for out-of-sensor rejection, finite recovery, event-long
+holdoff, common random numbers, timestamp ordering after jitter, grouping, and
+finite-cell saturation. The saved historical electron histograms close
+exactly in binning and integral, and an independent 40 ns implementation
+matches the historical one-hit calculation at every shared scan point.
+
+\section{Physical dynamic-range results}
+\label{sec:results}
+
+Figure~\ref{fig:requirements} shows the physical requirement surface for the
+1 TeV pion stress sample. At fixed 20\% PDE, survival degrades rapidly as
+pitch and recovery time increase. At fixed 4.3 ns recovery, increasing PDE
+also increases collision loss. A pitch requirement therefore cannot be quoted
+without an operating PDE and recovery definition.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{v2_physical_requirements.pdf}
+\caption{\label{fig:requirements}Recovery survival in the 1 TeV pion stress
+sample. Left: physical pitch for three recovery times at 20\% PDE. Right: PDE
+for three physical pitches at 4.3 ns recovery. Dashed horizontal lines mark
+90\% and 95\% survival.}
+\end{figure}
+
+Table~\ref{tab:working} gives values in the region most relevant to current
+fine-pitch architectures. At 20\% PDE and 4.3 ns recovery, 10 $\mu$m pitch
+loses only 2.07\% of detected photons to recovery. The loss grows to 7.27\%
+at 20 $\mu$m and 10.50\% at 25 $\mu$m. The usable fraction changes by less
+than two percentage points across these rows because the assumed 20\% PDE is
+the leading absolute-yield term.
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:working}Physical-pitch results for the 1 TeV pion stress
+sample at 20\% constant PDE and 4.3 ns recovery.}
+\smallskip
+\begin{tabular}{rccc}
+\toprule
+Pitch & Usable fraction $U$ & Recovery survival $S$ & 10th-percentile event $S$ \\
+\midrule
+10 $\mu$m & 19.64\% & 97.93\% & 96.7\% \\
+15 $\mu$m & 19.16\% & 95.57\% & --- \\
+20 $\mu$m & 18.59\% & 92.73\% & 90.3\% \\
+25 $\mu$m & 17.95\% & 89.50\% & 86.2\% \\
+30 $\mu$m & 17.23\% & 85.92\% & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The aggregate ratios are photon weighted and therefore emphasize bright
+events. They still do not expose how performance varies between events.
+Figure~\ref{fig:tails} shows the cumulative event-level survival at 20\% PDE
+and 4.3 ns recovery. At 20 $\mu$m, aggregate survival is 92.73\%, but the
+10th-percentile event survives at only 90.3\%. At 25 $\mu$m the corresponding
+values are 89.50\% and 86.2\%. A device requirement should specify both an
+aggregate metric and an allowed bright-event tail.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{v2_event_tail.pdf}
+\caption{\label{fig:tails}Cumulative event-level recovery survival in the
+1 TeV pion stress sample at 20\% PDE and 4.3 ns recovery. Events with no
+PDE-selected photons are excluded from the ratio.}
+\end{figure}
+
+Repeated-cell loss is also time dependent. Figure~\ref{fig:pulse} compares
+the PDE-selected arrival profile with the accepted 20 $\mu$m profile and shows
+the time-dependent survival for three pitches. Collisions suppress the prompt
+peak more strongly than the late tail. A recovery model can therefore bias a
+timing observable even when the total accepted count remains adequate.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.90\textwidth]{v2_pulse_shape.pdf}
+\caption{\label{fig:pulse}Photon-arrival profile for the 1 TeV pion stress
+sample at 20\% PDE and 4.3 ns recovery. Top: detected photons and accepted
+photons for 20 $\mu$m pitch in 50 ps bins. Bottom: accepted-to-detected ratio
+for 10, 20, and 25 $\mu$m pitch. These are photon timestamps, not analog
+voltage pulses.}
+\end{figure}
+
+\section{Factorized active area, spectral response, and channel sharing}
+\label{sec:factorized}
+
+The constant-PDE scan isolates occupancy and recovery, but it cannot test the
+simultaneous pitch and fill-factor target. We therefore add a factorized
+requirement model in which a photon must first land in the centered active
+region of its pitch cell, then satisfy a wavelength-dependent junction
+detection probability, survive physical-SPAD recovery, and finally obtain a
+record from shared timing electronics. The sequential exported-timestamp
+yield is
+\begin{equation}
+  \frac{N_{\mathrm{timestamp}}}{N_{\mathrm{incident}}}
+  = \frac{N_{\mathrm{active}}}{N_{\mathrm{incident}}}
+    \frac{N_{\mathrm{detected}}}{N_{\mathrm{active}}}
+    \frac{N_{\mathrm{accepted}}}{N_{\mathrm{detected}}}
+    \frac{N_{\mathrm{timestamp}}}{N_{\mathrm{accepted}}}.
+  \label{eq:factorized_yield}
+\end{equation}
+This identity prevents an apparent improvement in recovery survival at low
+fill factor from being mistaken for improved usable yield.
+
+For the present requirement study, the active region is a centered square
+with nominal area fraction 30--100\%. The wavelength shape is the normalized
+polynomial used in the earlier capstone workflow, scaled to a 30\% peak
+junction-detection probability. It is a traceable proxy rather than a FLASH
+measurement. Figure~\ref{fig:spectral} shows the stored Cherenkov wavelength
+distribution and each response stage for the 20 $\mu$m, 70\% fill-factor
+point. The incident-spectrum-averaged junction probability is 26.85\%.
+Geometric acceptance reduces the effective detected fraction to 18.74\%; SPAD
+recovery retains 93.06\% of detected photons. An approximately 80 $\mu$m
+shared timing channel retains 96.30\% of accepted avalanches, giving 16.79
+exported timestamps per 100 incident photons.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{spectral_response_proxy.pdf}
+\caption{\label{fig:spectral}Left: wavelength distribution of photons in the
+1 TeV pion one-fiber stress sample. Right: factorized response at 20 $\mu$m
+pitch and 70\% nominal square active area. The spectral junction response has
+a 30\% peak and is a study proxy, not a measured FLASH PDE curve.}
+\end{figure}
+
+Figure~\ref{fig:fillfactor} extends the calculation across pitch and fill
+factor. Lower fill factor reduces collision probability and can therefore
+increase recovery survival, while both effective detection and end-to-end
+timestamp yield decrease. Pitch optimization must consequently be performed
+at a stated active geometry and junction-response curve.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{fill_factor_pitch_matrix.pdf}
+\caption{\label{fig:fillfactor}Joint pitch and nominal square-fill-factor scan
+for the 1 TeV pion stress sample. The four panels separate geometric active
+area, effective detection, physical-SPAD recovery, and end-to-end timestamp
+yield. The model uses the spectral proxy of figure~\ref{fig:spectral}, 4.3 ns
+recovery, and an approximately 80 $\mu$m readout-channel side.}
+\end{figure}
+
+The final factor is controlled by timing-channel topology rather than SPAD
+pitch alone. A second scan fixes PDE to 20\%, recovery to 4.3 ns, channel
+resolving time to 50 ps, timestamp depth to eight, and counter depth to eight
+bits. It varies physical pitch and square groups from $1\times1$ through
+$64\times64$ SPADs, including a $6\times6$ topology. We select the
+lowest-payload point that retains at least 95\% of timestamps, limits events
+with any timing-buffer overflow to 5\%, and retains at least 99\% of counts.
+Across 5--50 $\mu$m pitch, the selected nominal timing-channel side lies
+between 50 and 100 $\mu$m. At 20 $\mu$m pitch, the $4\times4$ point retains
+96.10\% of timestamps, has at least one overflow in 1.42\% of events, and
+exports 1.617 kbit/event on average.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{channel_architecture_matrix.pdf}
+\caption{\label{fig:channels}Common-resource architecture stress test for the
+1 TeV pion sample. Every point uses the same PDE, recovery, resolving time,
+counter, and timestamp buffer. The result compares grouping under a common
+output model; it is not a prediction of the native Litavis, DIGILOG, or
+ASPIDES readout policies.}
+\end{figure}
+
+\section{First test of longitudinal timing information}
+\label{sec:timing}
+
+For a direct optical path, the propagation contribution is approximately
+\begin{equation}
+  t_{\mathrm{prop}}=\frac{nL}{c},
+\end{equation}
+where $L$ is the distance from photon production to the sensor and $n$ is the
+fused-silica refractive index. Internal reflections and non-axial paths
+produce a late tail. The time of an individual photon is therefore correlated
+with production depth but does not determine it uniquely.
+
+As a first information test, we use the 10th percentile of accepted photon
+arrival times in each pion event. The front end is fixed to 20\% PDE, 20
+$\mu$m pitch, and 4.3 ns recovery. Events require at least five accepted
+photons and at least five selected photons with production depth between 0 and
+2 m. A linear calibration predicts the mean selected-photon production depth.
+Even-numbered events define the calibration and odd-numbered events form the
+test set, giving 2,079 training and 2,033 test events.
+
+The ideal-time test RMSE is 236.46 mm, but the median absolute error is only
+59.24 mm and the 90th percentile absolute error is 246.77 mm. The large
+difference indicates a small population of poorly modeled shower tails, so
+this observable is a proof of information retention rather than a calorimeter
+longitudinal-resolution measurement.
+
+To isolate the incremental detector-timing contribution, each timing scenario
+uses the same photons and Gaussian random variates. We refit the calibration
+for each scenario and bootstrap the paired RMSE difference relative to ideal
+timing. Figure~\ref{fig:timing} shows that 10--50 ps response/TDC terms have
+negligible impact on this many-photon quantile. A 250 ps response plus 50 ps
+TDC adds $2.24^{+1.11}_{-1.31}$ mm at the central 68\% paired interval. A
+1.145 ns response plus 37 ps TDC adds 11.80 mm, with a broad interval from
+1.19 to 30.15 mm. The result does not remove the motivation for 10--50 ps
+single-photon timing, but it shows that this simple HG-DREAM observable does
+not yet set that requirement.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.84\textwidth]{v2_timing_depth.pdf}
+\caption{\label{fig:timing}Added test RMSE of the pion depth proxy relative to
+ideal photon times. Vertical bars give the central 68\% interval from a paired
+event bootstrap. The ideal absolute RMSE is 236 mm and is dominated by the
+proxy and shower tails rather than sub-100 ps detector smearing.}
+\end{figure}
+
+\section{First full-detector readout comparison}
+\label{sec:full_detector}
+
+We next apply the sensor response to every explicit Cherenkov photon in the
+available full-detector files. This sample contains 1,000 100 GeV positron
+events and 100 90 GeV charged-pion events. Each photon is assigned to its
+physical rod, Cherenkov fiber, and local sensor cell before digitization. The
+samples are not a matched-energy production and are used only to expose
+particle-dependent response transfer.
+
+Figure~\ref{fig:fulloccupancy} connects the one-fiber requirement to this
+detector-level calculation. The brightest Cherenkov fiber in an electron
+shower carries a larger local photon density than in the available pion
+sample. The event-level retained fraction consequently depends on both the
+sensor point and the spatial concentration of the shower.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{full_detector_occupancy.pdf}
+\caption{\label{fig:fulloccupancy}Local occupancy and retained event signal in
+the exploratory full-detector samples. The left panels quantify the brightest
+Cherenkov fiber in each event. The right panels compare the response after
+recovery with the matched-PDE no-recovery baseline. Electron and pion samples
+have different beam energies and statistics.}
+\end{figure}
+
+The conventional benchmark is a representative Onsemi MicroFC-30035 C-Series
+proxy based on public data-sheet values: 31\% PDE at 420 nm and 2.5 V
+overvoltage, 4,774 microcells, an 82 ns recharge constant, and a 1.5 ns
+fast-output FWHM~\cite{onsemiMicroC}. A fully charged avalanche contributes
+one photoelectron of charge. A repeated avalanche after $\Delta t$ contributes
+$1-\exp(-\Delta t/82\,\mathrm{ns})$. The FLASH benchmark uses 20\% constant
+PDE, 20 $\mu$m physical pitch, and a 4.3 ns non-paralyzable holdoff.
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:full_detector}Recovery response in the exploratory
+full-detector samples. Each pion Cherenkov shift is measured after electron
+calibration relative to a no-recovery baseline at the same PDE.}
+\smallskip
+\begin{tabular}{lccc}
+\toprule
+Readout point & Electron retained & Pion retained & Pion C shift \\
+\midrule
+Conventional C-Series proxy & 88.54\% & 96.93\% & +9.47\% \\
+FLASH, 20 $\mu$m and 4.3 ns & 97.79\% & 99.43\% & +1.67\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The electron showers contain a much brighter hottest fiber than the pion
+sample, so finite recovery compresses the electron calibration more strongly.
+Applying that calibration to pions creates a positive response shift. The
+smaller response width after either recovery model is therefore saturation
+compression and must not be interpreted as improved calorimeter resolution.
+The comparison isolates recovery by using a matched-PDE baseline for each
+model; it does not claim equal photon yield for the 20\% and 31\% PDE points.
+
+Figure~\ref{fig:fullscan} extends the two quoted benchmarks across the FLASH
+pitch and recovery scan. The mean pion shift exposes response nonlinearity
+after electron calibration. The width and compression panels diagnose how
+saturation reshapes the distribution; a smaller width after saturation is not
+by itself a resolution improvement.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{full_detector_performance_scan.pdf}
+\caption{\label{fig:fullscan}Full-detector response transfer for FLASH sensor
+points and the representative conventional-SiPM proxy (purple star). Left:
+pion Cherenkov-response shift after electron calibration, relative to a
+matched-PDE baseline. Center: event RMS divided by the mean. Right: response
+compression relative to that baseline.}
+\end{figure}
+
+This conventional-SiPM calculation is an optimistic sensor-only proxy, not a
+model of the complete installed HG-DREAM chain. It omits wavelength-dependent
+PDE, recharge-dependent avalanche probability, crosstalk, afterpulsing,
+electronics noise, and waveform integration. Moreover, explicit optical
+photons are available only for the Cherenkov channel. A final comparison must
+digitize measured analog waveforms and FLASH sparse hits from a common,
+matched-energy Cherenkov/scintillation photon production.
+
+\section{Relation to current digital-SiPM architectures}
+\label{sec:devices}
+
+Table~\ref{tab:devices} places the corrected requirement beside selected
+public architectures. The quantities are not interchangeable. Physical pitch
+sets local occupancy, while timing-group size determines which photons share
+electronics. A TDC least significant bit is not a complete single-photon
+instrument response.
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:devices}Selected public benchmarks relevant to the FLASH
+design space. Design targets and submitted architectures are distinguished
+from measured full-system quantities in the cited sources.}
+\smallskip
+\begin{tabular}{p{2.1cm}p{2.6cm}p{2.7cm}p{5.0cm}}
+\toprule
+Architecture & Spatial scale & Timing quantity & Relevance \\
+\midrule
+FLASH & Architecture under study & 10--50 ps target & The present simulation supports a requirement surface, not a frozen physical pitch. \\
+Litavis~\cite{litavis2026} & 10.17 $\mu$m SPAD; 40.68 $\mu$m macropixel & 37 ps TDC bin; 1,145 ps IRF at 450 nm & Demonstrates fine-pitch 3D integration and 4.3 ns holdoff; blue-light response is much wider than the TDC bin. \\
+ASPIDES~\cite{aspides2025} & 30 $\mu$m SPAD & 100 ps TDC LSB; first/last timing & Calorimeter-oriented design with counting and compressed timing output. \\
+DESY dSiPM~\cite{feindt2024desy} & about 70 $\mu$m pixel with four SPADs & $<100$ ps TDC; about 50 ps MIP result & Measured prototype; timing is shared within a larger pixel rather than exported per SPAD. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Litavis data sheet also reports a 47\% photon-detection efficiency at
+785 nm, but it does not provide a numerical blue-light PDE suitable for the
+present Cherenkov spectrum. We therefore do not insert that device into an
+absolute HG-DREAM yield prediction. This is an example of why architecture,
+wavelength response, and exported data semantics must be carried separately.
+
+\section{Limitations and next studies}
+\label{sec:limitations}
+
+The corrected analysis begins with a local one-fiber study and then digitizes
+every explicit Cherenkov photon in the available detector files. The stored
+scintillation sum has no corresponding explicit photon population, so this is
+not yet a complete dual-readout digitization. The calculation also omits
+optical coupling, measured wavelength- and angle-dependent PDE, dark counts,
+optical crosstalk, afterpulsing, hot-cell masking, time walk, non-Gaussian
+timing tails, TDC nonlinearity, realistic arbitration, link bandwidth, and
+power. The one-fiber architecture stress test includes idealized finite
+counters and buffers, but these resources are not yet propagated through the
+full-detector reconstruction. The constant-PDE, spectral-shape, active-area,
+and partial-recharge models are requirement tools, not complete device
+predictions.
+
+Four developments now have higher value than additional scans of the current
+files. First, matched electron, pion, and muon samples should be produced with
+one DREAMSim configuration at several energies between approximately 10 and
+300 GeV, retaining explicit Cherenkov and scintillation photons. This will
+separate beam energy, particle type, shower density, and the two readout
+channels.
+Second, the sensor model should ingest measured FLASH and reference-device
+PDE$(\lambda)$, instrument-response functions, and recovery distributions.
+Third, the same physics endpoints should be reconstructed from all photon
+timestamps, first/last timestamps, first hit per timing group, and short
+histograms. The result should be reported versus bits per event and lost-hit
+probability. Fourth, a full-tile simulation should be validated against
+HG-DREAM beam-test waveforms before converting those photons into sparse hits.
+
+Neural-network studies should follow, not precede, count-only and timing-only
+baselines with frozen preprocessing, independent training and test samples,
+and event-level uncertainty estimates. The first targets should be shower
+depth, particle identification, and the improvement to a dual-readout energy
+correction.
+
+\section{Conclusions}
+\label{sec:conclusions}
+
+We reproduced an earlier HG-DREAM dSiPM occupancy analysis and used that
+closure to find a consequential coordinate-convention error. A 3 mm sensor
+segmentation had been applied over a 1 mm fiber-local display range, causing
+the labelled pitch to act as a three-times finer physical pitch. Correcting
+the mapping removes the earlier basis for a universal 25 $\mu$m FLASH working
+point.
+
+With physical millimeter coordinates, the 1 TeV pion stress sample at 20\%
+PDE and 4.3 ns recovery retains 97.93\%, 92.73\%, and 89.50\% of detected
+photons at 10, 20, and 25 $\mu$m pitch. Event-level tails and prompt-peak
+distortion strengthen the constraint. The useful output of this phase is
+therefore a PDE--pitch--recovery surface with an event-tail requirement.
+
+A first photon-timing proxy confirms that the simulated arrival distribution
+contains longitudinal information, but sub-100 ps response smearing does not
+limit that simple many-photon observable. The next requirement must come from
+matched-energy samples, measured optical response, and a comparison of
+readout policies using calorimeter-level endpoints. HG-DREAM remains a strong
+benchmark because it connects these sensor choices to dense optical showers,
+current waveform readout, and beam data.
+
+The first detector-level propagation already distinguishes the readout
+concepts. Relative to matched-PDE no-recovery baselines, the representative
+conventional-SiPM proxy retains 88.54\% of the electron charge and 96.93\% of
+the pion charge, producing a +9.47\% calibrated pion Cherenkov shift. The 20
+$\mu$m, 4.3 ns FLASH point retains 97.79\% and 99.43\%, respectively, and
+reduces the shift to +1.67\%. The unmatched beam energies and absence of
+explicit scintillation photons preclude a final calorimeter-resolution claim.
+
+The factorized extension also shows why no single ``SPAD size'' specifies the
+front end. At the illustrative 20 $\mu$m, 70\% fill-factor point, a 30\% peak
+spectral junction proxy yields 18.74\% effective detection and 16.79\%
+end-to-end timestamp yield. Under the separate common-resource architecture
+scan, timing-channel sides of approximately 50--100 $\mu$m satisfy the stated
+retention, overflow, and count criteria across the tested pitch range. These
+values define testable design assumptions, not measured prototype
+performance.
+
+The funded SLAC LDRD now provides the experimental path to replace these
+response proxies with measured FLASH inputs. Blue-light PDE, the
+single-photon instrument response, recovery behavior, correlated noise, and
+output policy can each be measured on the prototype and propagated to the
+same one-fiber and detector-level observables. This closes the loop from
+sensor development to calorimeter performance rather than treating the
+prototype and simulation as separate efforts.
+
+\section{Data and software availability}
+
+The baseline repository is available at
+\url{https://github.com/TTU-HEP/dSiPM}. The current draft includes a
+deterministic response model, unit tests, input cutflows, scan tables, event
+tables, timing-calibration results, and run manifests. A reviewed tagged
+release with checksums and production metadata for the large derived Geant4
+samples will be prepared before submission.
+
+\acknowledgments
+
+This work is supported in part by the SLAC Laboratory Directed Research and
+Development program. The authors thank the HG-DREAM collaboration for the
+detector simulation and continuing beam-test program. The complete author list
+and funding acknowledgment will be confirmed before circulation.
+
+Generative AI tools assisted code refactoring, validation visualization,
+manuscript organization, and copy editing. The authors will verify all
+analysis choices, numerical results, references, and scientific claims before
+submission.
+
+\bibliographystyle{JHEP}
+\bibliography{references}
+
+\end{document}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "reference_scenario": {
+    "name": "FLASH reference effective-PDE model",
+    "detection_model": "constant_effective_pde",
+    "effective_pde": 0.20,
+    "spad_pitch_um": 20.0,
+    "spad_recovery_ns": 4.3,
+    "target_readout_channel_side_um": 80.0,
+    "timestamp_buffer_depth": 8,
+    "channel_resolving_time_ps": 50.0,
+    "count_bits": 8,
+    "seed": 4307,
+    "note": "The 20% effective PDE folds active area, junction efficiency, and avalanche probability into one working assumption."
+  },
+  "factorized_detection_proxy": {
+    "name": "FLASH factorized active-area and spectral proxy",
+    "active_area_shape": "square",
+    "fill_factor": 0.70,
+    "junction_peak_probability": 0.30,
+    "spectral_model": "legacy_shape",
+    "note": "The active square and normalized legacy spectral curve are requirement proxies, not prototype measurements."
+  },
+  "scan_grids": {
+    "full_detector_spad_pitch_um": [5.0, 10.0, 20.0, 25.0, 30.0, 50.0, 75.0, 100.0],
+    "full_detector_recovery_ns": [1.0, 4.3, 40.0],
+    "one_fiber_spad_pitch_um": [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0],
+    "fill_factor": [0.30, 0.50, 0.70, 0.85, 1.00],
+    "spads_per_readout_channel_side": [1, 2, 4, 6, 8, 12, 16, 24, 32, 64]
+  }
+}
