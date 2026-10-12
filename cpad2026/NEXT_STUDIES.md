@@ -21,7 +21,7 @@
   separate response stages.
 - A shared-channel stress test scans grouping, 50 ps resolving time, an
   eight-word timestamp buffer, and an eight-bit counter.
-- The detector logic has 28 passing unit tests.
+- The detector and HPCC-reduction logic has 35 passing unit tests.
 
 ## Current result and limits
 
@@ -86,12 +86,13 @@ stochastic and constant terms, transverse moments, timing observables, and
 response tails. This is the study that directly answers whether HG-DREAM can
 be replaced by dSiPMs.
 
-## Priority 2: matched-energy simulation production
+## Priority 2: matched-energy simulation production (running)
 
-Generate electron, pion, and muon samples with one DREAMSim commit and
-configuration at 10, 30, 100, and 300 GeV, with at least 5,000 events per
-point. Save production metadata and checksums. This is required before making
-particle-dependent or energy-scaling claims.
+The current production generates positron and pion samples with one pinned
+DREAMSim commit and configuration at 10, 30, 100, and 300 GeV, with 5,000
+events per point. Every ROOT file has deterministic seeds, a validation
+sidecar, and commit/configuration checksums. Muons and explicit scintillation
+photons remain a later production step.
 
 First outputs:
 
@@ -99,6 +100,26 @@ First outputs:
 - physical PDE-by-pitch-by-recovery surfaces at every energy;
 - shower-depth truth distributions and simple timing baselines;
 - full-tile occupancy maps rather than one collapsed fiber.
+
+The first matched-energy CPAD/JINST figure set is fixed before inspecting the
+results:
+
+1. selected Cherenkov photons versus beam energy, with event-bootstrap bands;
+2. recovery survival versus energy for positrons and pions at each pitch;
+3. the 10th, 50th, and 90th percentiles of event occupancy and recovery loss;
+4. electron-calibrated Cherenkov linearity for ideal photons, the FLASH
+   reference point, and the conventional-SiPM proxy;
+5. RMS/mean and central-68% resolution versus energy, with saturation
+   compression shown separately from genuine resolution improvement;
+6. incident/detected/accepted/lost photon-arrival profiles versus energy;
+7. full-detector and fiber-local x-y occupancy versus energy;
+8. matched representative event displays in truth, DREAM, HG-DREAM, and FLASH
+   views.
+
+Raw ROOT files remain on HPCC. The checked-in reduction pipeline writes
+sample-global event tables and additive histograms, verifies them against the
+production manifest, and transfers only compact plot inputs to the local
+machine.
 
 ## Priority 3: measured optical response
 
