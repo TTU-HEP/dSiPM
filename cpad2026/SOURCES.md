@@ -78,7 +78,9 @@ The pulse scan includes 10.17 um Litavis, 61.7 um effective Philips DPC3200,
 and 78 um Sherbrooke PDC points. In the reviewed primary material, 78 um is the
 largest documented pitch of a fabricated dSiPM-class array. The 100, 150, and
 200 um points are labelled simulation stress tests; the 200 um point also
-preserves the range used in the capstone work.
+preserves the range used in the capstone work. The 40 ns hard holdoff paired
+with the Philips pitch is explicitly a comparison proxy, not a DPC3200 device
+claim.
 
 - Singular Photonics Litavis datasheet:
   https://singularphotonics.com/wp-content/uploads/2026/09/SP-Litavis-Datasheet-0926.pdf

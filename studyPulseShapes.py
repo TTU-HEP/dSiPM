@@ -80,7 +80,7 @@ DIGITAL_SCENARIOS = (
     ),
     PulseScenario(
         "dpc3200",
-        "Philips DPC3200 61.7 #mum, 40 ns",
+        "Philips DPC pitch 61.7 #mum, 40 ns proxy",
         61.7,
         40.0,
         "fabricated effective cell pitch; 40 ns recovery proxy",
@@ -500,7 +500,7 @@ def _draw_ensemble(ROOT, output_dir: Path, products: dict[str, object]) -> list[
     legend.SetFillStyle(0)
     legend.SetTextSize(0.034)
     legend.AddEntry(ideal_graph, "Detected-photon reference", "l")
-    legend.AddEntry(analog_graph, "Conventional SiPM 35 #mum, #tau=82 ns", "l")
+    legend.AddEntry(analog_graph, "Onsemi SiPM 4,774 cells, #tau=82 ns", "l")
     retained.extend([frame, ideal_graph, analog_graph, legend])
     for scenario in DIGITAL_SCENARIOS:
         graph = _graph(
