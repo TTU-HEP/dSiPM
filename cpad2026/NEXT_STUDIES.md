@@ -156,8 +156,11 @@ installed waveform bit count as the comparison denominator.
 
 ## Priority 5: waveform and beam-test closure
 
-Convolve the simulated photon times with a measured SiPM impulse response and
-the current HG-DREAM DRS chain. Compare pulse shape, charge, leading-edge time,
+The first sensor-only step is now implemented in `studyPulseShapes.py`: it
+compares conventional-SiPM partial recharge and dSiPM hard holdoff on the same
+photons, and renders accepted hits with a common data-sheet-timed display
+kernel. The next step is to replace that kernel with a measured SiPM impulse
+response and the current HG-DREAM DRS chain. Compare pulse shape, charge, leading-edge time,
 and late-light fractions with representative electron, pion, and muon beam
 data. Only after this closure should the same simulated events be reduced to
 FLASH-like sparse hits.

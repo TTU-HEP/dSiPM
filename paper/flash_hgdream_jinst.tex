@@ -292,20 +292,42 @@ aggregate metric and an allowed bright-event tail.
 PDE-selected photons are excluded from the ratio.}
 \end{figure}
 
-Repeated-cell loss is also time dependent. Figure~\ref{fig:pulse} compares
-the PDE-selected arrival profile with the accepted 20 $\mu$m profile and shows
-the time-dependent survival for three pitches. Collisions suppress the prompt
-peak more strongly than the late tail. A recovery model can therefore bias a
-timing observable even when the total accepted count remains adequate.
+Repeated-cell loss is also time dependent. Figure~\ref{fig:pulse} begins with
+the same PDE-selected photon stream and compares a conventional analog SiPM
+partial-recharge model with several dSiPM pitch and holdoff scenarios.  The
+dSiPM hit streams are convolved with one common display kernel so that they can
+be read using the familiar visual language of an oscilloscope.  These curves
+are waveform-equivalent renderings, not predicted dSiPM output voltages.  The
+lower panel retains the absolute cumulative normalization and therefore shows
+both pulse-shape distortion and total loss.
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.90\textwidth]{v2_pulse_shape.pdf}
-\caption{\label{fig:pulse}Photon-arrival profile for the 1 TeV pion stress
-sample at 20\% PDE and 4.3 ns recovery. Top: detected photons and accepted
-photons for 20 $\mu$m pitch in 50 ps bins. Bottom: accepted-to-detected ratio
-for 10, 20, and 25 $\mu$m pitch. These are photon timestamps, not analog
-voltage pulses.}
+\includegraphics[width=0.96\textwidth]{pulse_architecture_comparison.pdf}
+\caption{\label{fig:pulse}Mean one-fiber pulse response for the 1 TeV pion
+stress sample using a common 20\% PDE selection.  The conventional-SiPM curve
+uses exponential partial recharge for a representative 3 mm Onsemi sensor.
+The digital curves use hard holdoff at the stated SPAD pitches and are rendered
+with the same 0.6 ns rise, 1.5 ns FWHM display kernel.  Public-device PDE,
+timing jitter, grouping, and exported timestamp policy are excluded here to
+isolate pitch and recovery.  The 200 $\mu$m curve is a simulation stress point,
+not a fabricated-device claim.}
+\end{figure}
+
+Figure~\ref{fig:pulse-scan} extends the scan to 200 $\mu$m and separates
+integrated response loss from the shift of the mean photon time.  The 78
+$\mu$m Sherbrooke PDC is the largest pitch of a fabricated dSiPM-class array
+identified in the reviewed primary material; 100--200 $\mu$m points are kept
+as explicit design stress tests.  The comparison also demonstrates why SPAD
+pitch and recovery must remain independent requirements.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.96\textwidth]{pulse_pitch_recovery_scan.pdf}
+\caption{\label{fig:pulse-scan}Integrated output and mean-time bias versus
+SPAD pitch for hard holdoffs from 1 to 40 ns.  The purple star is the
+conventional-SiPM partial-recharge proxy at its effective square-grid pitch;
+it is not mathematically equivalent to a hard dead time.}
 \end{figure}
 
 \section{Factorized active area, spectral response, and channel sharing}

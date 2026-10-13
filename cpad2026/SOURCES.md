@@ -65,6 +65,28 @@ The arrival-profile figure is not a measured analog pulse shape. It applies an
 idealized non-paralyzable SPAD holdoff to DREAMSim photon timestamps; an
 electronics impulse-response convolution is a named follow-up study.
 
+The new `results/pulse-shape-v1/` products close the sensor-only part of that
+gap. They apply exponential partial recharge to a representative 3 x 3 mm2
+MicroFC-30035-SMT SiPM and use the vendor's 0.6 ns fast-output rise time and
+1.5 ns FWHM as a common display kernel. Digital curves are explicitly called
+"waveform-equivalent": accepted timestamps are convolved with the same kernel
+to aid visual comparison, but are not claimed to be dSiPM voltage outputs.
+Every architecture uses the same deterministic 20% PDE selection so the plots
+isolate pitch and recovery rather than mixing in uncertain spectral response.
+
+The pulse scan includes 10.17 um Litavis, 61.7 um effective Philips DPC3200,
+and 78 um Sherbrooke PDC points. In the reviewed primary material, 78 um is the
+largest documented pitch of a fabricated dSiPM-class array. The 100, 150, and
+200 um points are labelled simulation stress tests; the 200 um point also
+preserves the range used in the capstone work.
+
+- Singular Photonics Litavis datasheet:
+  https://singularphotonics.com/wp-content/uploads/2026/09/SP-Litavis-Datasheet-0926.pdf
+- Philips DPC3200 characterization:
+  https://cds.cern.ch/record/2255746/files/Liu_2016_J._Inst._11_P01017.pdf
+- Sherbrooke PDC program update (78 um pitch):
+  https://indico.cern.ch/event/1473150/contributions/6734752/attachments/3155227/5604112/20251015%20DRD4%20CM%20PDC-program_Update.pdf
+
 ## Device values
 
 The authoritative table for plotted public numbers is `../cpad_benchmarks.json`.

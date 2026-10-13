@@ -61,6 +61,12 @@ DECK_ASSETS = {
         REPO / "cpad2026" / "assets" / "v2_event_tail.png",
     RESULTS / "flash-study-v2-final" / "physical_pulse_shape.png":
         REPO / "cpad2026" / "assets" / "v2_pulse_shape.png",
+    RESULTS / "pulse-shape-v1" / "pulse_scope_single_event.pdf":
+        REPO / "cpad2026" / "assets" / "pulse_scope_single_event.pdf",
+    RESULTS / "pulse-shape-v1" / "pulse_architecture_comparison.pdf":
+        REPO / "cpad2026" / "assets" / "pulse_architecture_comparison.pdf",
+    RESULTS / "pulse-shape-v1" / "pulse_pitch_recovery_scan.pdf":
+        REPO / "cpad2026" / "assets" / "pulse_pitch_recovery_scan.pdf",
     RESULTS / "flash-study-v2-final" / "timing_depth_proxy.png":
         REPO / "cpad2026" / "assets" / "v2_timing_depth.png",
     RESULTS / "fill-factor-spectral-v1" / "fill_factor_pitch_matrix.png":
@@ -159,6 +165,7 @@ def main() -> None:
     run_root = REBUILD / "runs" / run_token
     historical_root = run_root / "historical"
     flash_root = run_root / "flash-study-v2-final"
+    pulse_root = run_root / "pulse-shape-v1"
     fill_factor_root = run_root / "fill-factor-spectral-v1"
     channel_root = run_root / "channel-architecture-v2"
     full_detector_root = run_root / "full-detector-v1"
@@ -195,6 +202,8 @@ def main() -> None:
                     [sys.executable, "studyFlashV2.py",
                      "--output", str(flash_root),
                      "--bootstrap-samples", str(args.bootstrap_samples)],
+                    [sys.executable, "studyPulseShapes.py",
+                     "--output", str(pulse_root)],
                 ]
             )
             commands.extend(sensor_commands)
@@ -209,6 +218,11 @@ def main() -> None:
             shutil.copytree(
                 flash_root,
                 RESULTS / "flash-study-v2-final",
+                dirs_exist_ok=True,
+            )
+            shutil.copytree(
+                pulse_root,
+                RESULTS / "pulse-shape-v1",
                 dirs_exist_ok=True,
             )
         for source, target in (

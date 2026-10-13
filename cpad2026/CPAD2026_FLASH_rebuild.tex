@@ -280,13 +280,33 @@
 \end{frame}
 
 % 10
-\begin{frame}{Recovery-driven pulse-shape distortion}
+\begin{frame}{What a scope would show---and what FLASH can reconstruct}
   \centering
-  \includegraphics[width=0.84\textwidth,height=0.66\textheight,keepaspectratio]{assets/v2_pulse_shape.png}
-  \vspace{-0.03cm}
-  \parbox{0.93\textwidth}{\centering\fontsize{8.6}{10.0}\selectfont
-  Repeated hits cluster near the prompt peak. Total photon retention can remain
-  high while early-time fractions and leading-edge observables shift.}
+  \includegraphics[width=0.94\textwidth,height=0.62\textheight,keepaspectratio]{assets/pulse_scope_single_event.pdf}
+  \vspace{-0.08cm}
+  \parbox{0.93\textwidth}{\centering\fontsize{8.0}{9.2}\selectfont
+  An analog SiPM sums partially recharged cells; FLASH preserves timestamps,
+  so a familiar pulse can be reconstructed without treating it as sensor voltage.}
+\end{frame}
+
+% 10b
+\begin{frame}{The same photons expose architecture-dependent pulse loss}
+  \centering
+  \includegraphics[width=0.96\textwidth,height=0.62\textheight,keepaspectratio]{assets/pulse_architecture_comparison.pdf}
+  \vspace{-0.10cm}
+  \parbox{0.94\textwidth}{\centering\fontsize{8.0}{9.2}\selectfont
+  At common 20\% PDE, 20 $\mu$m / 4.3 ns retains 92.7\% of detected photons;
+  long-holdoff, coarse cells visibly distort and lose the one-fiber signal.}
+\end{frame}
+
+% 10c
+\begin{frame}{The public-device range does not stop the stress scan}
+  \centering
+  \includegraphics[width=0.96\textwidth,height=0.61\textheight,keepaspectratio]{assets/pulse_pitch_recovery_scan.pdf}
+  \vspace{-0.10cm}
+  \parbox{0.94\textwidth}{\centering\fontsize{8.0}{9.2}\selectfont
+  78 $\mu$m is the largest fabricated dSiPM-class pitch found;
+  100--200 $\mu$m are explicitly simulation stress tests, not device claims.}
 \end{frame}
 
 % 11
