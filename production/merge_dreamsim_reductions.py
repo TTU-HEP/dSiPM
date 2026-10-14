@@ -175,6 +175,8 @@ def merge(args: argparse.Namespace) -> dict[str, object]:
         observed[key] = reduction
         by_sample[key[0]].append(reduction)
         for name in (
+            "analysis_commit",
+            "reducer_sha256",
             "dreamsim_commit",
             "dsipm_commit",
             "campaign_sha256",
@@ -247,7 +249,7 @@ def merge(args: argparse.Namespace) -> dict[str, object]:
         writer.writeheader()
         writer.writerows(index_rows)
     result: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "complete" if not missing else "partial",
         "created_unix": time.time(),
         "runtime_seconds": time.time() - started,

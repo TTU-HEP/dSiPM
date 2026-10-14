@@ -170,6 +170,8 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
         "event_index_last": rows[-1]["event"],
         "beam_particle": sidecar.get("observed_particle"),
         "beam_energy_gev": sidecar.get("observed_energy_gev"),
+        "analysis_commit": args.analysis_commit,
+        "reducer_sha256": _sha256(Path(__file__).resolve()),
         "dreamsim_commit": sidecar.get("dreamsim_commit"),
         "dsipm_commit": sidecar.get("dsipm_commit"),
         "campaign_sha256": sidecar.get("campaign_sha256"),
@@ -237,6 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-dreamsim-commit")
     parser.add_argument("--expected-dsipm-commit")
     parser.add_argument("--expected-campaign-sha256")
+    parser.add_argument("--analysis-commit")
     return parser
 
 
