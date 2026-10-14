@@ -146,7 +146,11 @@ PYTHONPATH=$PWD \
 Each input produces a compressed event table, additive histogram archive, and
 JSON provenance summary. The event table contains the full pitch/recovery scan,
 the FLASH reference response, the conventional-SiPM proxy, timing quantiles,
-and spatial moments. Histograms retain the incident/detected/accepted/lost
-arrival-time and x-y views plus production-depth timing. The reducer uses the
-same full-detector coordinate and digitization functions as the local plotting
-workflow; only the ROOT reader changes from PyROOT to uproot.
+spatial moments, active-fiber occupancy quantiles, and high-occupancy fiber
+counts. Histograms retain the incident/detected/accepted/lost arrival-time and
+x-y views, production-depth timing, photon-weighted fiber occupancy, and
+detected-SPAD multiplicity for every scanned pitch. The occupancy products
+close exactly to the photon totals while keeping the raw photon vectors on
+HPCC. The reducer uses the same full-detector coordinate and digitization
+functions as the local plotting workflow; only the ROOT reader changes from
+PyROOT to uproot.

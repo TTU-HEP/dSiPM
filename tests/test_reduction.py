@@ -45,6 +45,9 @@ class ReductionTests(unittest.TestCase):
             seed=4307,
         )
         self.assertEqual(row["event"], 17)
+        self.assertEqual(row["active_cherenkov_fibers"], 3)
+        self.assertEqual(row["active_fibers_ge2_photons"], 1)
+        self.assertAlmostEqual(row["top_fiber_photon_fraction"], 0.5)
         self.assertEqual(row["detected_reference"], 4)
         self.assertEqual(row["accepted_reference"], int(np.count_nonzero(accepted)))
         self.assertEqual(
@@ -70,7 +73,7 @@ class ReductionTests(unittest.TestCase):
             reference_recovery_ns=4.3,
             seed=4307,
         )
-        histograms = HistogramAccumulator()
+        histograms = HistogramAccumulator(pitches_um=(20.0, 100.0))
         histograms.add(event, detected, accepted, lost)
         closure = histograms.closure()
         self.assertEqual(closure["incident_photons_in_time_histogram"], 4)
@@ -83,6 +86,27 @@ class ReductionTests(unittest.TestCase):
         payload = histograms.payload()
         self.assertEqual(payload["local_xy_incident"].shape, (120, 120))
         self.assertEqual(payload["global_xy_incident"].shape, (200, 200))
+        self.assertEqual(
+            int(np.sum(payload["fiber_active_count_by_incident_occupancy"])),
+            3,
+        )
+        self.assertEqual(
+            int(np.sum(payload["fiber_incident_photons_by_incident_occupancy"])),
+            4,
+        )
+        self.assertEqual(
+            payload["cell_active_count_by_detected_occupancy"].shape,
+            (2, 65),
+        )
+        self.assertTrue(
+            np.all(
+                np.sum(
+                    payload["cell_detected_photons_by_detected_occupancy"],
+                    axis=1,
+                )
+                == 4
+            )
+        )
 
 
 if __name__ == "__main__":

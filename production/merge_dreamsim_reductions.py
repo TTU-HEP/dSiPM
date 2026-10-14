@@ -24,6 +24,9 @@ EDGE_KEYS = {
     "global_y_edges_mm",
     "depth_edges_mm",
     "depth_time_edges_ns",
+    "fiber_occupancy_edges",
+    "cell_occupancy_edges",
+    "cell_occupancy_pitches_um",
 }
 
 
@@ -63,7 +66,7 @@ def _paths(summary_path: Path) -> tuple[Path, Path]:
 def _load_reduction(summary_path: Path) -> dict[str, object]:
     with summary_path.open() as handle:
         summary = json.load(handle)
-    if summary.get("schema_version") != 1 or summary.get("status") != "valid":
+    if summary.get("schema_version") not in {1, 2} or summary.get("status") != "valid":
         raise ValueError(f"Invalid reduction summary: {summary_path}")
     event_path, histogram_path = _paths(summary_path)
     if not event_path.is_file() or not histogram_path.is_file():

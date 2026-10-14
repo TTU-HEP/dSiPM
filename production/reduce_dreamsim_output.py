@@ -110,7 +110,9 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
     pitches = workflow.scans.full_detector_spad_pitch_um
     recovery = workflow.scans.full_detector_recovery_ns
     rows: list[dict[str, object]] = []
-    histograms = HistogramAccumulator()
+    histograms = HistogramAccumulator(
+        pitches_um=tuple(float(value) for value in pitches)
+    )
     selected_total = 0
     detected_total = 0
     accepted_total = 0
@@ -154,7 +156,7 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
         raise AssertionError("Event and histogram accepted totals do not close")
 
     summary: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "valid",
         "created_unix": time.time(),
         "runtime_seconds": time.time() - started,
@@ -212,6 +214,7 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
             "sum3dSS is retained as a stored DREAMSim signal; scintillation photons are absent.",
             "The reference digital response uses constant effective PDE.",
             "Dark counts, crosstalk, afterpulsing, and electronics arbitration are not included.",
+            "Per-fiber and per-SPAD occupancy products are additive summaries; raw photon vectors remain on HPCC.",
         ],
     }
     temporary_summary = summary_path.with_suffix(summary_path.suffix + ".tmp")

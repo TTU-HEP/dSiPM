@@ -18,6 +18,7 @@ from .full_detector import (
     FullDetectorScenario,
     digitize_analog_sipm_event,
     digitize_full_detector_event,
+    global_cell_ids,
     scan_full_detector_event,
 )
 
@@ -39,6 +40,20 @@ LOCAL_EDGES_MM = np.linspace(-1.5, 1.5, 121, dtype=np.float64)
 GLOBAL_EDGES_MM = np.linspace(-100.0, 100.0, 201, dtype=np.float64)
 DEPTH_EDGES_MM = np.linspace(0.0, 2000.0, 201, dtype=np.float64)
 DEPTH_TIME_EDGES_NS = np.linspace(5.0, 40.0, 351, dtype=np.float64)
+FIBER_OCCUPANCY_MAX = 8192
+CELL_OCCUPANCY_MAX = 64
+FIBER_OCCUPANCY_EDGES = np.concatenate(
+    (
+        np.arange(0.5, FIBER_OCCUPANCY_MAX + 1.5, dtype=np.float64),
+        np.asarray([np.inf]),
+    )
+)
+CELL_OCCUPANCY_EDGES = np.concatenate(
+    (
+        np.arange(0.5, CELL_OCCUPANCY_MAX + 1.5, dtype=np.float64),
+        np.asarray([np.inf]),
+    )
+)
 
 
 def scenario_column(pitch_um: float, recovery_ns: float) -> str:
@@ -55,6 +70,21 @@ def _mean(values: np.ndarray) -> float | str:
 
 def _rms(values: np.ndarray) -> float | str:
     return float(np.std(values)) if values.size else ""
+
+
+def _occupancies(ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return sorted active ids and their positive integer occupancies."""
+
+    values = np.asarray(ids, dtype=np.int64)
+    if values.size == 0:
+        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
+    return np.unique(values, return_counts=True)
+
+
+def _fraction_in_top(occupancies: np.ndarray, count: int) -> float:
+    if occupancies.size == 0:
+        return 0.0
+    return float(np.sum(np.sort(occupancies)[-count:]) / np.sum(occupancies))
 
 
 def reduce_event(
@@ -107,6 +137,11 @@ def reduce_event(
     accepted_times = event.time_ns[reference.accepted_mask]
     detected_times = event.time_ns[reference.detected_mask]
     lost_mask = reference.detected_mask & ~reference.accepted_mask
+    _, fiber_occupancies = _occupancies(event.sensor_id)
+    if fiber_occupancies.size != event.active_sensor_count:
+        raise AssertionError("Active-fiber count does not close to sensor ids")
+    if int(np.sum(fiber_occupancies)) != event.selected_photon_count:
+        raise AssertionError("Per-fiber occupancy does not close to selected photons")
 
     row: dict[str, object] = {
         "sample": sample,
@@ -122,6 +157,17 @@ def reduce_event(
         "selected_cherenkov_photons": event.selected_photon_count,
         "active_cherenkov_fibers": event.active_sensor_count,
         "max_photons_in_one_fiber": event.max_sensor_photons,
+        "active_fiber_occupancy_q50": _quantile(fiber_occupancies, 0.50),
+        "active_fiber_occupancy_q90": _quantile(fiber_occupancies, 0.90),
+        "active_fiber_occupancy_q99": _quantile(fiber_occupancies, 0.99),
+        "top_fiber_photon_fraction": _fraction_in_top(fiber_occupancies, 1),
+        "top5_fiber_photon_fraction": _fraction_in_top(fiber_occupancies, 5),
+        "active_fibers_ge2_photons": int(np.count_nonzero(fiber_occupancies >= 2)),
+        "active_fibers_ge5_photons": int(np.count_nonzero(fiber_occupancies >= 5)),
+        "active_fibers_ge10_photons": int(np.count_nonzero(fiber_occupancies >= 10)),
+        "active_fibers_ge20_photons": int(np.count_nonzero(fiber_occupancies >= 20)),
+        "active_fibers_ge50_photons": int(np.count_nonzero(fiber_occupancies >= 50)),
+        "active_fibers_ge100_photons": int(np.count_nonzero(fiber_occupancies >= 100)),
         "detected_reference": reference.n_detected,
         "accepted_reference": reference.n_accepted,
         "lost_reference_recovery": int(np.count_nonzero(lost_mask)),
@@ -160,6 +206,7 @@ class HistogramAccumulator:
     """Additive histograms saved once per ROOT file and merged later."""
 
     arrays: dict[str, np.ndarray] = field(default_factory=dict)
+    pitches_um: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if self.arrays:
@@ -197,7 +244,38 @@ class HistogramAccumulator:
                 (DEPTH_EDGES_MM.size - 1, DEPTH_TIME_EDGES_NS.size - 1),
                 dtype=np.int64,
             ),
+            "fiber_active_count_by_incident_occupancy": np.zeros(
+                FIBER_OCCUPANCY_EDGES.size - 1,
+                dtype=np.int64,
+            ),
+            "fiber_incident_photons_by_incident_occupancy": np.zeros(
+                FIBER_OCCUPANCY_EDGES.size - 1,
+                dtype=np.int64,
+            ),
+            "fiber_detected_photons_by_incident_occupancy": np.zeros(
+                FIBER_OCCUPANCY_EDGES.size - 1,
+                dtype=np.int64,
+            ),
+            "fiber_accepted_photons_by_incident_occupancy": np.zeros(
+                FIBER_OCCUPANCY_EDGES.size - 1,
+                dtype=np.int64,
+            ),
+            "fiber_lost_photons_by_incident_occupancy": np.zeros(
+                FIBER_OCCUPANCY_EDGES.size - 1,
+                dtype=np.int64,
+            ),
         }
+        if self.pitches_um:
+            shape = (len(self.pitches_um), CELL_OCCUPANCY_EDGES.size - 1)
+            self.arrays["cell_active_count_by_detected_occupancy"] = np.zeros(
+                shape, dtype=np.int64
+            )
+            self.arrays["cell_detected_photons_by_detected_occupancy"] = np.zeros(
+                shape, dtype=np.int64
+            )
+            self.arrays["cell_extra_photons_by_detected_occupancy"] = np.zeros(
+                shape, dtype=np.int64
+            )
 
     def add(
         self,
@@ -237,6 +315,53 @@ class HistogramAccumulator:
             bins=(DEPTH_EDGES_MM, DEPTH_TIME_EDGES_NS),
         )[0].astype(np.int64)
 
+        sensor_ids, incident_occupancy = _occupancies(event.sensor_id)
+        detected_occupancy = np.zeros(sensor_ids.size, dtype=np.int64)
+        accepted_occupancy = np.zeros(sensor_ids.size, dtype=np.int64)
+        lost_occupancy = np.zeros(sensor_ids.size, dtype=np.int64)
+        for target, mask in (
+            (detected_occupancy, detected_mask),
+            (accepted_occupancy, accepted_mask),
+            (lost_occupancy, lost_mask),
+        ):
+            selected_ids, selected_counts = _occupancies(event.sensor_id[mask])
+            if selected_ids.size:
+                positions = np.searchsorted(sensor_ids, selected_ids)
+                if not np.array_equal(sensor_ids[positions], selected_ids):
+                    raise AssertionError("Digitized fiber id is absent from incident photons")
+                target[positions] = selected_counts
+        fiber_histograms = {
+            "fiber_active_count_by_incident_occupancy": None,
+            "fiber_incident_photons_by_incident_occupancy": incident_occupancy,
+            "fiber_detected_photons_by_incident_occupancy": detected_occupancy,
+            "fiber_accepted_photons_by_incident_occupancy": accepted_occupancy,
+            "fiber_lost_photons_by_incident_occupancy": lost_occupancy,
+        }
+        for name, weights in fiber_histograms.items():
+            self.arrays[name] += np.histogram(
+                incident_occupancy,
+                bins=FIBER_OCCUPANCY_EDGES,
+                weights=weights,
+            )[0].astype(np.int64)
+
+        for pitch_index, pitch_um in enumerate(self.pitches_um):
+            _, cell_occupancy = _occupancies(
+                global_cell_ids(event, float(pitch_um), mask=detected_mask)
+            )
+            cell_histograms = {
+                "cell_active_count_by_detected_occupancy": None,
+                "cell_detected_photons_by_detected_occupancy": cell_occupancy,
+                "cell_extra_photons_by_detected_occupancy": np.maximum(
+                    cell_occupancy - 1, 0
+                ),
+            }
+            for name, weights in cell_histograms.items():
+                self.arrays[name][pitch_index] += np.histogram(
+                    cell_occupancy,
+                    bins=CELL_OCCUPANCY_EDGES,
+                    weights=weights,
+                )[0].astype(np.int64)
+
     def payload(self) -> dict[str, np.ndarray]:
         return {
             **self.arrays,
@@ -247,6 +372,11 @@ class HistogramAccumulator:
             "global_y_edges_mm": GLOBAL_EDGES_MM,
             "depth_edges_mm": DEPTH_EDGES_MM,
             "depth_time_edges_ns": DEPTH_TIME_EDGES_NS,
+            "fiber_occupancy_edges": FIBER_OCCUPANCY_EDGES,
+            "cell_occupancy_edges": CELL_OCCUPANCY_EDGES,
+            "cell_occupancy_pitches_um": np.asarray(
+                self.pitches_um, dtype=np.float64
+            ),
         }
 
     def closure(self) -> dict[str, int]:
@@ -256,9 +386,47 @@ class HistogramAccumulator:
         lost = int(np.sum(self.arrays["time_lost_recovery"]))
         if detected != accepted + lost:
             raise AssertionError("Detected time histogram does not close")
+        fiber_incident = int(
+            np.sum(self.arrays["fiber_incident_photons_by_incident_occupancy"])
+        )
+        fiber_detected = int(
+            np.sum(self.arrays["fiber_detected_photons_by_incident_occupancy"])
+        )
+        fiber_accepted = int(
+            np.sum(self.arrays["fiber_accepted_photons_by_incident_occupancy"])
+        )
+        fiber_lost = int(
+            np.sum(self.arrays["fiber_lost_photons_by_incident_occupancy"])
+        )
+        if fiber_incident != incident:
+            raise AssertionError("Fiber occupancy does not close to incident photons")
+        if fiber_detected != detected:
+            raise AssertionError("Fiber occupancy does not close to detected photons")
+        if fiber_accepted != accepted or fiber_lost != lost:
+            raise AssertionError("Fiber occupancy does not close to recovery response")
+        if not np.array_equal(
+            self.arrays["fiber_detected_photons_by_incident_occupancy"],
+            self.arrays["fiber_accepted_photons_by_incident_occupancy"]
+            + self.arrays["fiber_lost_photons_by_incident_occupancy"],
+        ):
+            raise AssertionError("Per-occupancy detected photons do not close")
+        if self.pitches_um:
+            cell_photons = np.sum(
+                self.arrays["cell_detected_photons_by_detected_occupancy"],
+                axis=1,
+            )
+            if np.any(cell_photons != detected):
+                raise AssertionError("SPAD-cell occupancy does not close to detected photons")
         return {
             "incident_photons_in_time_histogram": incident,
             "detected_photons_in_time_histogram": detected,
             "accepted_photons_in_time_histogram": accepted,
             "lost_recovery_photons_in_time_histogram": lost,
+            "active_fibers_in_occupancy_histogram": int(
+                np.sum(self.arrays["fiber_active_count_by_incident_occupancy"])
+            ),
+            "incident_photons_in_fiber_occupancy_histogram": fiber_incident,
+            "detected_photons_in_fiber_occupancy_histogram": fiber_detected,
+            "accepted_photons_in_fiber_occupancy_histogram": fiber_accepted,
+            "lost_recovery_photons_in_fiber_occupancy_histogram": fiber_lost,
         }
