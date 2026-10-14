@@ -151,6 +151,9 @@ counts. Histograms retain the incident/detected/accepted/lost arrival-time and
 x-y views, production-depth timing, photon-weighted fiber occupancy, and
 detected-SPAD multiplicity for every scanned pitch. The occupancy products
 close exactly to the photon totals while keeping the raw photon vectors on
-HPCC. The reducer uses the same full-detector coordinate and digitization
+HPCC. The archive also retains the accepted-photon time profile for every
+pitch/recovery point and the detected/partial-recharge charge profile of the
+conventional-SiPM proxy, allowing matched pulse-shape plots without copying
+raw vectors. The reducer uses the same full-detector coordinate and digitization
 functions as the local plotting workflow; only the ROOT reader changes from
 PyROOT to uproot.

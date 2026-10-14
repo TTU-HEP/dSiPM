@@ -27,6 +27,7 @@ EDGE_KEYS = {
     "fiber_occupancy_edges",
     "cell_occupancy_edges",
     "cell_occupancy_pitches_um",
+    "scan_recovery_ns",
 }
 
 
@@ -66,7 +67,7 @@ def _paths(summary_path: Path) -> tuple[Path, Path]:
 def _load_reduction(summary_path: Path) -> dict[str, object]:
     with summary_path.open() as handle:
         summary = json.load(handle)
-    if summary.get("schema_version") not in {1, 2} or summary.get("status") != "valid":
+    if summary.get("schema_version") not in {1, 2, 3} or summary.get("status") != "valid":
         raise ValueError(f"Invalid reduction summary: {summary_path}")
     event_path, histogram_path = _paths(summary_path)
     if not event_path.is_file() or not histogram_path.is_file():
@@ -249,7 +250,7 @@ def merge(args: argparse.Namespace) -> dict[str, object]:
         writer.writeheader()
         writer.writerows(index_rows)
     result: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "complete" if not missing else "partial",
         "created_unix": time.time(),
         "runtime_seconds": time.time() - started,

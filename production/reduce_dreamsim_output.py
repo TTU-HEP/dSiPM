@@ -19,7 +19,12 @@ if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
 from dsipm.full_detector import iter_full_detector_events_uproot
-from dsipm.reduction import ANALOG_SIPM, HistogramAccumulator, reduce_event
+from dsipm.reduction import (
+    ANALOG_SIPM,
+    HistogramAccumulator,
+    reduce_event,
+    scenario_column,
+)
 from dsipm.workflow import DEFAULT_WORKFLOW_PATH, load_sensor_workflow
 
 
@@ -111,7 +116,8 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
     recovery = workflow.scans.full_detector_recovery_ns
     rows: list[dict[str, object]] = []
     histograms = HistogramAccumulator(
-        pitches_um=tuple(float(value) for value in pitches)
+        pitches_um=tuple(float(value) for value in pitches),
+        recovery_times_ns=tuple(float(value) for value in recovery),
     )
     selected_total = 0
     detected_total = 0
@@ -124,7 +130,7 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
             step_size=args.step_size,
         )
     ):
-        row, detected_mask, accepted_mask, lost_mask = reduce_event(
+        row, detected_mask, accepted_mask, lost_mask, analog = reduce_event(
             event,
             sample=sample,
             source_root=str(root_file),
@@ -137,7 +143,22 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
             seed=workflow.reference.seed,
         )
         rows.append(row)
-        histograms.add(event, detected_mask, accepted_mask, lost_mask)
+        scan_time_counts = histograms.add(
+            event,
+            detected_mask,
+            accepted_mask,
+            lost_mask,
+            analog,
+        )
+        for pitch_index, pitch_um in enumerate(pitches):
+            for recovery_index, recovery_ns in enumerate(recovery):
+                expected_scan_count = int(
+                    row[scenario_column(float(pitch_um), float(recovery_ns))]
+                )
+                if scan_time_counts[pitch_index, recovery_index] != expected_scan_count:
+                    raise AssertionError(
+                        "Pitch/recovery time profile does not close to event scan"
+                    )
         selected_total += event.selected_photon_count
         detected_total += int(np.count_nonzero(detected_mask))
         accepted_total += int(np.count_nonzero(accepted_mask))
@@ -156,7 +177,7 @@ def reduce_file(args: argparse.Namespace) -> dict[str, object]:
         raise AssertionError("Event and histogram accepted totals do not close")
 
     summary: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "valid",
         "created_unix": time.time(),
         "runtime_seconds": time.time() - started,

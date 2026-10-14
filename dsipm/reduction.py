@@ -12,8 +12,10 @@ from typing import Sequence
 
 import numpy as np
 
+from .digitizer import _apply_nonparalyzable_dead_time
 from .full_detector import (
     AnalogSiPMScenario,
+    AnalogSiPMDigitization,
     FullDetectorPhotonEvent,
     FullDetectorScenario,
     digitize_analog_sipm_event,
@@ -100,7 +102,13 @@ def reduce_event(
     reference_recovery_ns: float,
     seed: int,
     analog_sipm: AnalogSiPMScenario = ANALOG_SIPM,
-) -> tuple[dict[str, object], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    dict[str, object],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    AnalogSiPMDigitization,
+]:
     """Return one compact row plus reference detected/accepted masks."""
 
     pitches = np.asarray(pitches_um, dtype=np.float64)
@@ -198,7 +206,13 @@ def reduce_event(
             row[scenario_column(float(pitch_um), float(recovery_ns))] = int(
                 accepted[pitch_index, recovery_index]
             )
-    return row, reference.detected_mask, reference.accepted_mask, lost_mask
+    return (
+        row,
+        reference.detected_mask,
+        reference.accepted_mask,
+        lost_mask,
+        analog,
+    )
 
 
 @dataclass
@@ -207,6 +221,7 @@ class HistogramAccumulator:
 
     arrays: dict[str, np.ndarray] = field(default_factory=dict)
     pitches_um: tuple[float, ...] = ()
+    recovery_times_ns: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if self.arrays:
@@ -216,6 +231,12 @@ class HistogramAccumulator:
             "time_detected": np.zeros(TIME_EDGES_NS.size - 1, dtype=np.int64),
             "time_accepted": np.zeros(TIME_EDGES_NS.size - 1, dtype=np.int64),
             "time_lost_recovery": np.zeros(TIME_EDGES_NS.size - 1, dtype=np.int64),
+            "time_analog_detected": np.zeros(
+                TIME_EDGES_NS.size - 1, dtype=np.int64
+            ),
+            "time_analog_charge": np.zeros(
+                TIME_EDGES_NS.size - 1, dtype=np.float64
+            ),
             "local_xy_incident": np.zeros(
                 (LOCAL_EDGES_MM.size - 1, LOCAL_EDGES_MM.size - 1),
                 dtype=np.int64,
@@ -264,6 +285,8 @@ class HistogramAccumulator:
                 FIBER_OCCUPANCY_EDGES.size - 1,
                 dtype=np.int64,
             ),
+            "analog_detected_total": np.zeros(1, dtype=np.int64),
+            "analog_charge_total": np.zeros(1, dtype=np.float64),
         }
         if self.pitches_um:
             shape = (len(self.pitches_um), CELL_OCCUPANCY_EDGES.size - 1)
@@ -276,6 +299,15 @@ class HistogramAccumulator:
             self.arrays["cell_extra_photons_by_detected_occupancy"] = np.zeros(
                 shape, dtype=np.int64
             )
+        if self.pitches_um and self.recovery_times_ns:
+            self.arrays["time_accepted_scan"] = np.zeros(
+                (
+                    len(self.pitches_um),
+                    len(self.recovery_times_ns),
+                    TIME_EDGES_NS.size - 1,
+                ),
+                dtype=np.int64,
+            )
 
     def add(
         self,
@@ -283,7 +315,8 @@ class HistogramAccumulator:
         detected_mask: np.ndarray,
         accepted_mask: np.ndarray,
         lost_mask: np.ndarray,
-    ) -> None:
+        analog: AnalogSiPMDigitization | None = None,
+    ) -> np.ndarray:
         masks = {
             "incident": np.ones(event.time_ns.size, dtype=bool),
             "detected": detected_mask,
@@ -299,6 +332,19 @@ class HistogramAccumulator:
                 event.local_y_mm[mask],
                 bins=(LOCAL_EDGES_MM, LOCAL_EDGES_MM),
             )[0].astype(np.int64)
+        if analog is not None:
+            analog_time = event.time_ns[analog.detected_mask]
+            self.arrays["time_analog_detected"] += np.histogram(
+                analog_time,
+                bins=TIME_EDGES_NS,
+            )[0].astype(np.int64)
+            self.arrays["time_analog_charge"] += np.histogram(
+                analog_time,
+                bins=TIME_EDGES_NS,
+                weights=analog.charge_per_detected_photon,
+            )[0]
+            self.arrays["analog_detected_total"][0] += analog.n_detected
+            self.arrays["analog_charge_total"][0] += analog.charge_pe
         self.arrays["global_xy_incident"] += np.histogram2d(
             event.sensor_x_mm,
             event.sensor_y_mm,
@@ -344,9 +390,18 @@ class HistogramAccumulator:
                 weights=weights,
             )[0].astype(np.int64)
 
+        detected_time = event.time_ns[detected_mask]
+        detected_indices = np.flatnonzero(detected_mask)
+        scan_counts = np.zeros(
+            (len(self.pitches_um), len(self.recovery_times_ns)),
+            dtype=np.int64,
+        )
         for pitch_index, pitch_um in enumerate(self.pitches_um):
+            detected_cell_ids = global_cell_ids(
+                event, float(pitch_um), mask=detected_mask
+            )
             _, cell_occupancy = _occupancies(
-                global_cell_ids(event, float(pitch_um), mask=detected_mask)
+                detected_cell_ids
             )
             cell_histograms = {
                 "cell_active_count_by_detected_occupancy": None,
@@ -361,6 +416,22 @@ class HistogramAccumulator:
                     bins=CELL_OCCUPANCY_EDGES,
                     weights=weights,
                 )[0].astype(np.int64)
+            for recovery_index, recovery_ns in enumerate(self.recovery_times_ns):
+                accepted_detected = _apply_nonparalyzable_dead_time(
+                    detected_cell_ids,
+                    detected_time,
+                    float(recovery_ns),
+                )
+                scan_counts[pitch_index, recovery_index] = int(
+                    np.count_nonzero(accepted_detected)
+                )
+                self.arrays["time_accepted_scan"][
+                    pitch_index, recovery_index
+                ] += np.histogram(
+                    event.time_ns[detected_indices[accepted_detected]],
+                    bins=TIME_EDGES_NS,
+                )[0].astype(np.int64)
+        return scan_counts
 
     def payload(self) -> dict[str, np.ndarray]:
         return {
@@ -376,6 +447,9 @@ class HistogramAccumulator:
             "cell_occupancy_edges": CELL_OCCUPANCY_EDGES,
             "cell_occupancy_pitches_um": np.asarray(
                 self.pitches_um, dtype=np.float64
+            ),
+            "scan_recovery_ns": np.asarray(
+                self.recovery_times_ns, dtype=np.float64
             ),
         }
 
@@ -417,6 +491,14 @@ class HistogramAccumulator:
             )
             if np.any(cell_photons != detected):
                 raise AssertionError("SPAD-cell occupancy does not close to detected photons")
+        analog_detected = int(np.sum(self.arrays["time_analog_detected"]))
+        analog_detected_total = int(self.arrays["analog_detected_total"][0])
+        analog_charge = float(np.sum(self.arrays["time_analog_charge"]))
+        analog_charge_total = float(self.arrays["analog_charge_total"][0])
+        if analog_detected != analog_detected_total:
+            raise AssertionError("Analog detected time histogram does not close")
+        if not np.isclose(analog_charge, analog_charge_total, rtol=1.0e-12):
+            raise AssertionError("Analog charge time histogram does not close")
         return {
             "incident_photons_in_time_histogram": incident,
             "detected_photons_in_time_histogram": detected,
@@ -429,4 +511,6 @@ class HistogramAccumulator:
             "detected_photons_in_fiber_occupancy_histogram": fiber_detected,
             "accepted_photons_in_fiber_occupancy_histogram": fiber_accepted,
             "lost_recovery_photons_in_fiber_occupancy_histogram": fiber_lost,
+            "analog_detected_photons_in_time_histogram": analog_detected,
+            "analog_charge_pe_in_time_histogram": analog_charge,
         }

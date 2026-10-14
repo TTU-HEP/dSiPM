@@ -32,7 +32,7 @@ class ReductionTests(unittest.TestCase):
 
     def test_event_row_closes_reference_scan(self) -> None:
         event = self._event()
-        row, detected, accepted, lost = reduce_event(
+        row, detected, accepted, lost, analog = reduce_event(
             event,
             sample="eplus_100gev",
             source_root="input.root",
@@ -58,10 +58,11 @@ class ReductionTests(unittest.TestCase):
             int(np.count_nonzero(detected)),
             int(np.count_nonzero(accepted)) + int(np.count_nonzero(lost)),
         )
+        self.assertEqual(row["analog_detected_at_31pct_pde"], analog.n_detected)
 
     def test_histogram_payload_is_additive_and_closes(self) -> None:
         event = self._event()
-        _, detected, accepted, lost = reduce_event(
+        row, detected, accepted, lost, analog = reduce_event(
             event,
             sample="eplus_100gev",
             source_root="input.root",
@@ -73,8 +74,11 @@ class ReductionTests(unittest.TestCase):
             reference_recovery_ns=4.3,
             seed=4307,
         )
-        histograms = HistogramAccumulator(pitches_um=(20.0, 100.0))
-        histograms.add(event, detected, accepted, lost)
+        histograms = HistogramAccumulator(
+            pitches_um=(20.0, 100.0),
+            recovery_times_ns=(4.3, 40.0),
+        )
+        scan_counts = histograms.add(event, detected, accepted, lost, analog)
         closure = histograms.closure()
         self.assertEqual(closure["incident_photons_in_time_histogram"], 4)
         self.assertEqual(closure["detected_photons_in_time_histogram"], 4)
@@ -106,6 +110,23 @@ class ReductionTests(unittest.TestCase):
                 )
                 == 4
             )
+        )
+        self.assertEqual(payload["time_accepted_scan"].shape, (2, 2, 700))
+        self.assertEqual(
+            int(np.sum(payload["time_accepted_scan"][0, 0])),
+            row[scenario_column(20.0, 4.3)],
+        )
+        self.assertEqual(
+            int(np.sum(payload["time_analog_detected"])),
+            analog.n_detected,
+        )
+        self.assertAlmostEqual(
+            float(np.sum(payload["time_analog_charge"])),
+            analog.charge_pe,
+        )
+        self.assertEqual(
+            scan_counts[0, 0],
+            row[scenario_column(20.0, 4.3)],
         )
 
 
