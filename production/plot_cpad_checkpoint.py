@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -83,6 +84,19 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _git_commit(path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip()
 
 
 def _configure_style() -> None:
@@ -1004,6 +1018,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     input_dir = args.input_dir.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    plotter_path = Path(__file__).resolve()
+    repository_dir = plotter_path.parents[1]
     merged_summary = json.loads(
         (input_dir / "merged_reduction_summary.json").read_text()
     )
@@ -1074,6 +1090,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "metrics_json_sha256": _sha256(metrics_path),
         "audit_markdown": str(audit_path),
         "audit_markdown_sha256": _sha256(audit_path),
+        "plotter_path": str(plotter_path),
+        "plotter_sha256": _sha256(plotter_path),
+        "plotter_git_commit": _git_commit(repository_dir),
         "figures": figures,
     }
     manifest_path = output_dir / "FLASH_schema3_checkpoint_manifest.json"
