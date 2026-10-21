@@ -99,8 +99,7 @@ def _plot_axes(label, xlabel, xlim, *, colorbar=False):
     ax.set_box_aspect(1); ax.minorticks_on()
     ax.text(0, 1.04, "FLASH", transform=ax.transAxes, weight="bold", fontsize=15)
     ax.text(.22, 1.04, "Simulation Preliminary", transform=ax.transAxes, style="italic", fontsize=12)
-    ax.text(.97, .97, label, transform=ax.transAxes, ha="right", va="top", fontsize=9,
-            bbox=dict(facecolor="white", alpha=.9, edgecolor="none", pad=2))
+    fig.text(.945, .965, label, ha="right", va="top", fontsize=9)
     ax.set_xlim(*xlim); ax.set_xlabel(xlabel)
     return fig, ax
 
