@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 C_MM_NS = 299.792458
-ALGORITHM_VERSION = "fiber-depth-v1"
+ALGORITHM_VERSION = "fiber-depth-v2-core-radius"
 
 
 def digest(value) -> str:
@@ -33,7 +33,8 @@ class DepthContract:
     absolute arrival time, BEFORE instrument jitter and entrance subtraction.
     """
     length_mm: float = 2000.0
-    core_radius_mm: float = 0.4
+    core_radius_mm: float = 0.39
+    fiber_outer_radius_mm: float = 0.4
     n_phase: float = 1.49
     n_clad: float = 1.42
     n_group: float = 1.49
@@ -54,7 +55,7 @@ class DepthContract:
         vals = [v for v in asdict(self).values() if isinstance(v, (float, int))]
         if not np.isfinite(vals).all():
             raise ValueError("Nonfinite contract")
-        if not (self.length_mm > 0 and self.core_radius_mm > 0 and
+        if not (self.length_mm > 0 and 0 < self.core_radius_mm <= self.fiber_outer_radius_mm and
                 self.n_phase > self.n_clad > 0 and self.n_group > abs(self.front_z)):
             raise ValueError("Invalid optical/front model")
         if not (self.pitch_um > 0 and 0 <= self.pde <= 1 and self.recovery_ns >= 0):
@@ -82,6 +83,10 @@ class DepthContract:
             raise ValueError("Unsupported sensor workflow")
         values = dict(pde=reference["effective_pde"], pitch_um=reference["spad_pitch_um"],
                       recovery_ns=reference["spad_recovery_ns"], workflow_sha256=hashlib.sha256(raw).hexdigest())
+        geometry = data.get("geometry", {})
+        for name in ("length_mm", "core_radius_mm", "fiber_outer_radius_mm", "n_phase", "n_clad", "n_group"):
+            if name in geometry:
+                values[name] = geometry[name]
         values.update(overrides)
         return cls(**values)
 

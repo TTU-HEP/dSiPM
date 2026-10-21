@@ -65,8 +65,9 @@ def dreamsim_front_contract(*, gun_world_mm=(25., -25., -1050.), x_deg=2., y_deg
     contract = DepthContract(front_z=float(r[2, 2]), front_x=float(r[0, 2]), front_y=float(r[1, 2]),
         front_offset_mm=float(-r[2, 2]*1000-face[2]),
         geometry_id=f"DREAMSim-54b2447-RyRx-{x_deg:g}-{y_deg:g}-worldZ-front-v1", **sensor_optics)
-    if contract.length_mm != 2000. or contract.core_radius_mm != .4:
-        raise ValueError("Pinned DREAMSim geometry is L=2000 mm, core radius=0.4 mm")
+    if (contract.length_mm != 2000. or contract.core_radius_mm != .39 or
+            contract.fiber_outer_radius_mm != .4):
+        raise ValueError("Pinned DREAMSim geometry is L=2000 mm, core radius=0.39 mm, outer radius=0.40 mm")
     return contract, float(distance/C_MM_NS), face
 
 

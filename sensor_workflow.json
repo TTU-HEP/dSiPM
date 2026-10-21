@@ -1,5 +1,17 @@
 {
   "schema_version": 1,
+  "geometry": {
+    "source_commit": "54b2447c323dd7eb5093fda5baf9ee433bad1bf6",
+    "source_file": "sim/src/B4DetectorConstruction.cc",
+    "source_blob_sha1": "1201f1a576c47b4edf7bbcb6249b8c12eb71ebdd",
+    "length_mm": 2000.0,
+    "core_radius_mm": 0.39,
+    "fiber_outer_radius_mm": 0.40,
+    "n_phase": 1.49,
+    "n_clad": 1.42,
+    "n_group": 1.49,
+    "index_model": "constant_no_dispersion"
+  },
   "reference_scenario": {
     "name": "FLASH reference effective-PDE model",
     "detection_model": "constant_effective_pde",

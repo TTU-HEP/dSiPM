@@ -42,9 +42,13 @@ z = (n_group kappa L + a_x x + a_y y + b - c t) / (n_group kappa - a_z)
 
 kappa is optical path / axial distance, not a measured quantity. Phase indices
 set the ideal guidance bound; the independent group index sets flight time.
-Default assumptions are L=2000 mm, core radius=0.4 mm and indices 1.49/1.42,
+Default assumptions are L=2000 mm, core/outer radii=0.39/0.40 mm and indices 1.49/1.42,
 not the supplied simplified study's 1.504 model. There is no implicit universal
 effective index for the optional historical fixed-path comparison.
+
+The core and cladding boundary must remain distinct. The source audit corrected
+the earlier 0.40 mm core assumption; the v2 algorithm/contract rejects old
+calibration tables rather than silently reusing their radius normalization.
 
 `DepthContract.from_workflow()` loads canonical PDE/pitch/holdoff and pins the
 complete configuration hash. It also accepts a workflow JSON **path**. For the

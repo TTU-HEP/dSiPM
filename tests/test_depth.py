@@ -243,6 +243,17 @@ class DepthSensorTests(unittest.TestCase):
 
 
 class DepthGeometryTests(unittest.TestCase):
+    def test_production_core_and_outer_radii_are_distinct(self):
+        # DREAMSim 54b2447, B4DetectorConstruction.cc: core_C_rMax=.39;
+        # clad_C_rMax=.40 mm. These are independent source constants.
+        c, _, _ = dreamsim_front_contract()
+        self.assertEqual(c.core_radius_mm, .39)
+        self.assertEqual(c.fiber_outer_radius_mm, .40)
+
+    def test_production_contract_rejects_outer_radius_as_core(self):
+        with self.assertRaisesRegex(ValueError, "core"):
+            dreamsim_front_contract(core_radius_mm=.4)
+
     def test_source_geometry_roundtrip_all_fibers_and_edges(self):
         for rx, ry in [(-45, -40), (-25, -25), (0, 0), (15, 25), (44, 39)]:
             for f in range(4):
