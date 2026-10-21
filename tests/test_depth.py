@@ -258,7 +258,7 @@ class AllPhotonCampaignTests(unittest.TestCase):
         import gzip
         from dsipm.io import file_sha256
         from dsipm.sensors import digitize_full_detector_event, FullDetectorScenario
-        from reduceDepthCampaign import reduce_one, merge_campaign
+        from reduceDepthCampaign import reduce_one, merge_campaign, depth_support
         raw = event()
         raw.time_ns[:2] = [-1.,45.]  # reader retains these; sensor window does not
         order = np.flatnonzero((raw.time_ns>0)&(raw.time_ns<40))
@@ -306,6 +306,15 @@ class AllPhotonCampaignTests(unittest.TestCase):
             self.assertEqual(merged['samples']['fixture']['photon_stages']['accepted'],digit.n_accepted)
             self.assertEqual(merged['samples']['fixture']['cases']['axial_50ps']['input'],digit.n_accepted)
             self.assertFalse(merged['optical_transport_validated'])
+            support=depth_support([row],plan,root/'output',root/'checkpoint',root/'support',
+                summary_sha256=file_sha256(root/'checkpoint/summary.json'),draws=20)
+            self.assertEqual(support['events'],1)
+            self.assertEqual(support['samples']['fixture']['source_files'],1)
+            with np.load(root/'support/fixture.depth_support.npz') as h:
+                self.assertFalse(h['precision_qualified'].any())
+                self.assertEqual(h['source_files_by_truth'][0,0].tolist(),[1,1])
+            with self.assertRaisesRegex(ValueError,'checkpoint mismatch'):
+                depth_support([row],plan,root/'output',root/'checkpoint',root/'bad_support',summary_sha256='a'*64)
             with self.assertRaises(FileExistsError): merge_campaign([row],plan,root/'output',root/'checkpoint')
             (root/'output/results/fixture/histograms.npz').write_bytes(b'corrupt')
             with self.assertRaisesRegex(ValueError,'checksum'): reduce_one(row,plan,root/'output')

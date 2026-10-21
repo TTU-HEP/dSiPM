@@ -290,6 +290,77 @@ def merge_campaign(rows, plan, output, checkpoint, *, bootstrap_draws=500):
     return report
 
 
+def depth_support(rows, plan, output, checkpoint, target, *, summary_sha256, draws=500):
+    """Depth-bin file-bootstrap support; no raw photons, fitting or event cuts."""
+    master=json.loads((checkpoint/'summary.json').read_text())
+    if (file_sha256(checkpoint/'summary.json')!=summary_sha256 or master['plan_sha256']!=plan['_sha256']
+            or not master['closure'] or master['events']!=sum(r['events'] for r in rows)
+            or master['files']!=len(rows)):
+        raise ValueError('Depth-support source checkpoint mismatch')
+    if target.exists(): raise FileExistsError('Immutable depth-support checkpoint already exists')
+    pins={r['input']['root_sha256']:r for r in master['inputs']}; samples={}
+    for row in rows:
+        directory=output/'results'/Path(row['root_file']).stem
+        audit_path,hist_path=directory/'audit.json',directory/'histograms.npz'
+        pin=pins[row['root_sha256']]
+        if (pin['input']!=row or file_sha256(audit_path)!=pin['audit_sha256']
+                or file_sha256(hist_path)!=pin['histograms_sha256']):
+            raise ValueError('Depth-support per-source hash mismatch')
+        with np.load(hist_path,allow_pickle=False) as h:
+            d,f,w=h['denominator'],h['failures'],h['within'][... ,1]
+        if file_sha256(hist_path)!=pin['histograms_sha256']:
+            raise ValueError('Depth-support input changed during read')
+        if np.any(f>d) or np.any(w>d-f): raise ValueError('Depth-support count closure failed')
+        samples.setdefault(row['sample'],[]).append((d,f,w))
+    stage=target.with_name(target.name+'.staging');stage.mkdir(parents=True,exist_ok=False)
+    report=dict(source_summary_sha256=summary_sha256,plan_sha256=plan['_sha256'],
+        code_sha256=file_sha256(__file__),files=len(rows),events=master['events'],samples={},
+        bootstrap=dict(unit='independent source ROOT file',draws=draws,seed=plan['noise_seed']+1),
+        qualification=dict(minimum_source_files=30,maximum_relative_standard_error=.05,
+            minimum_defined_draw_fraction=.95,selection='statistical display qualification only; no photon/event selection'),
+        warning='Empirical bootstrap cannot prove zero population probability from zero observed successes/failures',
+        optical_transport_validated=False)
+    for sample,blocks in sorted(samples.items()):
+        d,f,w=[np.stack([b[i] for b in blocks]) for i in range(3)]
+        nm,ns,nt=d.shape[1:];shape=(nm,ns,nt)
+        a={k:np.full(shape,np.nan) for k in ('failure_low_pct','failure_high_pct','within100mm_low_pct',
+            'within100mm_high_pct','within100mm_relative_se')}
+        a['source_files_by_truth']=(d>0).sum(axis=0);a['defined_bootstrap_draws']=np.zeros(shape,int)
+        a['precision_qualified']=np.zeros(shape,bool)
+        weights=np.random.default_rng(plan['noise_seed']+1).multinomial(len(blocks),
+            np.ones(len(blocks))/len(blocks),size=draws).astype(float)
+        for mi in range(nm):
+            for si in range(ns):
+                point_d=d[:,mi,si].sum(axis=0);active=point_d>0
+                if not active.any(): continue
+                bd=weights @ d[:,mi,si,active].astype(float)
+                bw=weights @ w[:,mi,si,active].astype(float);bf=weights @ f[:,mi,si,active].astype(float)
+                good=np.divide(100*bw,bd,out=np.full_like(bd,np.nan),where=bd>0)
+                fail=np.divide(100*bf,bd,out=np.full_like(bd,np.nan),where=bd>0)
+                for name,values in [('failure',fail),('within100mm',good)]:
+                    lo,hi=np.nanpercentile(values,[2.5,97.5],axis=0)
+                    a[name+'_low_pct'][mi,si,active]=lo;a[name+'_high_pct'][mi,si,active]=hi
+                point=100*w[:,mi,si,active].sum(axis=0)/point_d[active]
+                se=np.nanstd(good,axis=0,ddof=1)
+                relative=np.divide(se,point,out=np.full_like(se,np.nan),where=point>0)
+                a['within100mm_relative_se'][mi,si,active]=relative
+                defined=(bd>0).sum(axis=0);a['defined_bootstrap_draws'][mi,si,active]=defined
+                a['precision_qualified'][mi,si,active]=((a['source_files_by_truth'][mi,si,active]>=30)
+                    &(relative<=.05)&(defined>=.95*draws))
+        filename=sample+'.depth_support.npz'
+        np.savez_compressed(stage/filename,**a,z_edges_mm=plan['z_edges_mm'],sigmas_ps=plan['sigmas_ps'])
+        coverage={}
+        for mi,model in enumerate(plan['baselines']):
+            for si,sigma in enumerate(plan['sigmas_ps']):
+                count=d[:,mi,si].sum(axis=0);mask=a['precision_qualified'][mi,si]
+                coverage[model['name']+'_'+str(sigma)+'ps']=dict(qualified_bins=int(mask.sum()),
+                    all_bins=nt,accepted_photon_fraction_in_qualified_bins=float(count[mask].sum()/count.sum()) if count.sum() else None)
+        report['samples'][sample]=dict(file=filename,sha256=file_sha256(stage/filename),source_files=len(blocks),coverage=coverage)
+    with (stage/'summary.json').open('x') as out:json.dump(report,out,indent=2,allow_nan=False)
+    stage.rename(target);print('DEPTH SUPPORT',len(rows),master['events'],target,flush=True)
+    return report
+
+
 def main():
     if not os.environ.get('SLURM_JOB_ID'):
         raise RuntimeError('Raw campaign analysis requires Slurm')
@@ -297,10 +368,12 @@ def main():
     ap.add_argument('--plan',required=True); ap.add_argument('--output',required=True)
     ap.add_argument('--task',type=int,default=int(os.environ.get('SLURM_ARRAY_TASK_ID','0')))
     ap.add_argument('--merge',type=Path,help='New immutable aggregate checkpoint; no raw ROOT reads')
+    ap.add_argument('--depth-support',type=Path,help='New immutable per-depth-bin uncertainty checkpoint; aggregate inputs only')
+    ap.add_argument('--source-checkpoint',type=Path);ap.add_argument('--summary-sha256')
     args=ap.parse_args()
     plan_path=Path(args.plan); plan=json.loads(plan_path.read_text()); plan['_sha256']=file_sha256(plan_path)
     for name,digest in plan['code_sha256'].items():
-        if file_sha256((plan_path.parent if args.merge else Path(__file__).parent)/name)!=digest:
+        if file_sha256((plan_path.parent if args.merge or args.depth_support else Path(__file__).parent)/name)!=digest:
             raise ValueError('Analysis code checksum mismatch: '+name)
     manifest=Path(plan['input_manifest'])
     if file_sha256(manifest)!=plan['input_manifest_sha256']:
@@ -321,6 +394,11 @@ def main():
     if len(set(identities))!=len(identities):
         raise ValueError('Duplicate sample event index')
     make_histograms(plan)
+    if args.merge and args.depth_support: raise ValueError('Select one aggregate operation')
+    if args.depth_support:
+        if not args.source_checkpoint or not args.summary_sha256: raise ValueError('Pin the source checkpoint and summary hash')
+        depth_support(rows,plan,Path(args.output),args.source_checkpoint,args.depth_support,summary_sha256=args.summary_sha256)
+        return
     if args.merge:
         merge_campaign(rows,plan,Path(args.output),args.merge)
         return

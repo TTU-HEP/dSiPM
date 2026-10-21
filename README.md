@@ -165,6 +165,13 @@ writing any plot, and records model and acquisition assumptions in each manifest
 An additional accuracy-versus-timestamp-resolution figure compares both frozen
 baselines, with source-file statistical intervals and failed inversions retained
 in the denominator. The exported CSV contains all samples and resolution points.
+`reduceDepthCampaign.py --depth-support NEW_DIRECTORY --source-checkpoint CHECKPOINT
+--summary-sha256 SHA256` (with the same `--plan` and `--output`) uses only the
+hash-checked per-source aggregates to compute depth-bin file-bootstrap intervals.
+It records independent-file coverage and qualifies the within-10-cm rate only
+when at least 30 source files contribute and relative bootstrap error is <=5%.
+This is a display-precision flag, not an event/photon cut or a physics-validity
+certificate. Undefined or sparsely supported bins remain explicitly recorded.
 
 ## Comparison models and scope
 
