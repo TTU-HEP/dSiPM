@@ -239,6 +239,22 @@ def plot_campaign(args):
     target=Path(args.output);target.mkdir(parents=True,exist_ok=False)
     for sample,product,label in products:
         render_response(product,target/sample,label=label)
+    import csv
+    with (target/'all_resolution_results.csv').open('x',newline='') as f:
+        writer=csv.writer(f)
+        writer.writerow(['sample','events','baseline','sigma_ps','accepted_inputs','physical_returns','failures',
+            'within10cm_pct','within10cm_stat95_low','within10cm_stat95_high',
+            'failure_pct','failure_stat95_low','failure_stat95_high',
+            'conditional_median_residual_cm','conditional_sigma68_cm'])
+        for sample,row in sorted(summary['samples'].items()):
+            for name,case in row['cases'].items():
+                model,sigma=name.rsplit('_',1)
+                q=case['conditional_residual_q16_q50_q84_mm']
+                writer.writerow([sample,row['events'],model,int(sigma[:-2]),case['input'],case['reconstructed'],case['failed'],
+                    case['within100mm_pct'],*case['file_bootstrap_95']['within100mm_pct'],
+                    case['failure_pct'],*case['file_bootstrap_95']['failure_pct'],
+                    None if q[1] is None else q[1]/10,
+                    None if case['conditional_sigma68_mm'] is None else case['conditional_sigma68_mm']/10])
     print('Saved',len(products),'complete-campaign response sets in',target)
 
 

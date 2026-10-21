@@ -336,7 +336,9 @@ class AllPhotonCampaignTests(unittest.TestCase):
                     np.savez_compressed(root/name,**a,z_edges_mm=plan['z_edges_mm'],
                         residual_edges_mm=plan['residual_edges_mm'],sigmas_ps=[50])
                     samples[sample]=dict(events=5000,histograms_file=name,histograms_sha256=file_sha256(root/name),
-                        cases={'axial_50ps':dict(input=3,failed=1,within100mm=0)})
+                        cases={'axial_50ps':dict(input=3,reconstructed=2,failed=1,within100mm=0,within100mm_pct=0.,
+                            failure_pct=100/3,conditional_residual_q16_q50_q84_mm=[-1000.,0.,1000.],conditional_sigma68_mm=1000.,
+                            file_bootstrap_95=dict(within100mm_pct=[0.,0.],failure_pct=[100/3,100/3]))})
             summary=dict(status='complete_accounting_physics_provisional',closure=True,files=1648,events=40000,
                 samples=samples,plan_sha256=file_sha256(path),optical_transport_validated=False,residual_quantile_bin_width_mm=2000)
             (root/'summary.json').write_text(json.dumps(summary))
@@ -345,6 +347,7 @@ class AllPhotonCampaignTests(unittest.TestCase):
                 plot_campaign(args)
             self.assertEqual(render.call_count,8)
             self.assertEqual(render.call_args.args[0]['input_by_truth'],[2,1])
+            self.assertEqual(len((root/'plots/all_resolution_results.csv').read_text().splitlines()),9)
             args.output=str(root/'must_not_exist')
             (root/'piplus_300gev.npz').write_bytes(b'corrupt')
             with self.assertRaisesRegex(ValueError,'hash mismatch'): plot_campaign(args)
