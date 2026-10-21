@@ -258,7 +258,7 @@ class AllPhotonCampaignTests(unittest.TestCase):
         import gzip
         from dsipm.io import file_sha256
         from dsipm.sensors import digitize_full_detector_event, FullDetectorScenario
-        from reduceDepthCampaign import reduce_one
+        from reduceDepthCampaign import reduce_one, merge_campaign
         raw = event()
         raw.time_ns[:2] = [-1.,45.]  # reader retains these; sensor window does not
         order = np.flatnonzero((raw.time_ns>0)&(raw.time_ns<40))
@@ -282,7 +282,9 @@ class AllPhotonCampaignTests(unittest.TestCase):
             plan = dict(_sha256='b'*64,code_revision='fixture',production_pins={},reference_release=str(root/'reference'),
                 z_edges_mm=[0.,1000.,2000.],residual_edges_mm=[-2000.,0.,2000.],sigmas_ps=[0,50],
                 baselines=[dict(name='axial',n_eff=1.49),dict(name='historical_fixed',n_eff=1.553)],
-                entrance_sigma_ps=0,noise_seed=20261021,old_calibration_root_sha256='a'*64,old_calibration_event_indices=[0])
+                entrance_sigma_ps=0,noise_seed=20261021,old_calibration_root_sha256='a'*64,old_calibration_event_indices=[0],
+                contract_sha256=dreamsim_front_contract(pde=ref.pde,pitch_um=ref.pitch_um,recovery_ns=ref.recovery_ns,
+                    workflow_sha256=ref.workflow_sha256)[0].sha256,selection='synthetic',scope='test',target='test')
             truth = dict(truth_z_mm=np.linspace(0.,2000.,len(raw.time_ns)))
             yielded = [('a'*64+':0',(raw,np.arange(len(raw.time_ns)),truth,dict(raw=703,rejected=3)))]
             with patch.dict('os.environ',SLURM_JOB_ID='fixture'),patch('reduceDepthCampaign.iter_corrected_root',return_value=iter(yielded)) as read:
@@ -299,8 +301,20 @@ class AllPhotonCampaignTests(unittest.TestCase):
                 self.assertEqual(h['denominator'][1].sum(),0)
                 np.testing.assert_array_equal(h['stage_truth'].sum(axis=1),[700,2,698,698-digit.n_detected,digit.n_detected-digit.n_accepted,digit.n_accepted])
             self.assertEqual(reduce_one(row,plan,root/'output'),report)
+            merged = merge_campaign([row],plan,root/'output',root/'checkpoint',bootstrap_draws=5)
+            self.assertEqual(merged['events'],1)
+            self.assertEqual(merged['samples']['fixture']['photon_stages']['accepted'],digit.n_accepted)
+            self.assertEqual(merged['samples']['fixture']['cases']['axial_50ps']['input'],digit.n_accepted)
+            self.assertFalse(merged['optical_transport_validated'])
+            with self.assertRaises(FileExistsError): merge_campaign([row],plan,root/'output',root/'checkpoint')
             (root/'output/results/fixture/histograms.npz').write_bytes(b'corrupt')
             with self.assertRaisesRegex(ValueError,'checksum'): reduce_one(row,plan,root/'output')
+            with self.assertRaisesRegex(ValueError,'hash mismatch'): merge_campaign([row],plan,root/'output',root/'bad_checkpoint')
+
+    def test_residual_quantiles_keep_empty_and_exact_endpoints(self):
+        from reduceDepthCampaign import residual_quantiles
+        self.assertEqual(residual_quantiles([0,0],[-2,0,2]),[None]*3)
+        np.testing.assert_allclose(residual_quantiles([1,1],[-2,0,2]),[-1.36,0.,1.36])
 
 
 class DepthSensorTests(unittest.TestCase):

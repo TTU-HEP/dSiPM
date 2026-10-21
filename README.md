@@ -12,7 +12,8 @@ dsipm/
   sensors.py    FLASH holdoff, analog recharge, matched clocks, readout/pulse proxies
   depth.py      model contract, calibration, reconstruction, truth-based evaluation
   io.py         immutable caches and hash-checked, Slurm-only existing-ROOT reader
-studyDepthReconstruction.py   one analysis entry point: calibrate / scan
+studyDepthReconstruction.py   compact-cache entry point: calibrate / scan / plot
+reduceDepthCampaign.py       Slurm-only complete-campaign baseline reduction / merge
 sensor_workflow.json         one canonical sensor configuration
 tests/                      focused physics and end-to-end regressions
 ```
@@ -151,6 +152,11 @@ index baseline excludes its original 20 calibration events from scores only.
 Neither baseline is a trained path model or a certified final detector result.
 The plan pins the combined manifest, code hashes, reference table, timing scan,
 optics and calibration exclusions; use a new output directory for every new plan.
+Its `--merge NEW_CHECKPOINT` mode verifies every per-source hash, event identity,
+sensor-stage count and response/residual closure before publishing a checkpoint.
+It reports 500-draw source-file bootstrap intervals, separately by particle and
+energy. Those intervals describe statistical uncertainty only; they do not cover
+the unresolved transport model, path ambiguity or electronics assumptions.
 
 ## Comparison models and scope
 

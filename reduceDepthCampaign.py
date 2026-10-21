@@ -173,20 +173,140 @@ def reduce_one(row, plan, output):
     return report
 
 
+def residual_quantiles(hist, edges):
+    """Binned conditional quantiles; uncertainty from binning is <= bin width."""
+    hist = np.asarray(hist)
+    if hist.sum()==0:
+        return [None]*3
+    cdf = np.cumsum(hist)/hist.sum()
+    return [float(np.interp(q,np.r_[0.,cdf],edges)) for q in (.16,.5,.84)]
+
+
+def merge_campaign(rows, plan, output, checkpoint, *, bootstrap_draws=500):
+    """Strict aggregate-only merge; resample complete independent source files."""
+    if checkpoint.exists():
+        raise FileExistsError('Immutable checkpoint already exists')
+    totals, files, blocks = {}, [], {}
+    ze, re = np.asarray(plan['z_edges_mm']), np.asarray(plan['residual_edges_mm'])
+    for row in rows:
+        directory = output/'results'/Path(row['root_file']).stem
+        audit_file, hist_file = directory/'audit.json',directory/'histograms.npz'
+        report = json.loads(audit_file.read_text())
+        if (report['input']!=row or report['plan_sha256']!=plan['_sha256']
+                or report['contract_sha256']!=plan['contract_sha256']
+                or report['code_revision']!=plan['code_revision']
+                or report['status']!='complete_accounting_physics_provisional'
+                or report['optical_transport_validated'] or report['trained_path_models']
+                or file_sha256(hist_file)!=report['histograms_sha256']):
+            raise ValueError('Merge provenance/hash mismatch: '+str(directory))
+        with np.load(hist_file,allow_pickle=False) as src:
+            if (not np.array_equal(src['z_edges_mm'],ze) or not np.array_equal(src['residual_edges_mm'],re)
+                    or not np.array_equal(src['sigmas_ps'],plan['sigmas_ps'])):
+                raise ValueError('Incompatible histogram axes')
+            a = {k:src[k] for k in make_histograms(plan)}
+        shapes = make_histograms(plan)
+        if any(v.shape!=shapes[k].shape or v.dtype.kind not in 'iu' or np.any(v<0) for k,v in a.items()):
+            raise ValueError('Invalid histogram shape/counts')
+        if (not np.array_equal(a['response'].sum(axis=-1)+a['failures'],a['denominator'])
+                or not np.array_equal(a['depth_residual'].sum(axis=-1),a['response'].sum(axis=-1))
+                or not np.array_equal(a['residual'].sum(axis=-1),a['response'].sum(axis=(-1,-2)))
+                or not np.array_equal(a['stage_truth'][0],a['stage_truth'][1]+a['stage_truth'][2])
+                or not np.array_equal(a['stage_truth'][2],a['stage_truth'][3:6].sum(axis=0))):
+            raise ValueError('Merged response/stage/coverage closure failed')
+        if np.any(np.diff(a['within'],axis=-1)<0) or np.any(a['within'][...,-1]>a['response'].sum(axis=-1)):
+            raise ValueError('Nonphysical inclusive success counts')
+        records = report['records']
+        if (len(records)!=row['events'] or {r['entry'] for r in records}!=set(range(row['events']))
+                or any(r['event']!=row['offset']+r['entry'] for r in records)
+                or any(r['raw']!=r['geometric_downstream']+r['nonincident_records'] for r in records)):
+            raise ValueError('Missing/duplicate event identity at merge')
+        stages = ['geometric_downstream','outside_sensor_window','incident_in_window','not_detected','lost_holdoff','accepted']
+        if not np.array_equal(a['stage_truth'].sum(axis=1),[sum(r[k] for r in records) for k in stages]):
+            raise ValueError('Event/photon-stage totals disagree')
+        metrics = np.zeros((len(plan['baselines']),len(plan['sigmas_ps']),4),np.int64)
+        for mi,model in enumerate(plan['baselines']):
+            for si,sigma in enumerate(plan['sigmas_ps']):
+                tag = model['name']+'_'+str(sigma)+'ps'
+                training = [r for r in records if model['name']=='historical_fixed'
+                    and row['root_sha256']==plan['old_calibration_root_sha256']
+                    and r['event'] in plan['old_calibration_event_indices']]
+                expected = sum(r['accepted'] for r in records)-sum(r['accepted'] for r in training)
+                metrics[mi,si] = [sum(r['baselines'][tag][k] for r in records)
+                                  for k in ('input','reconstructed','failed','within100mm')]
+                hmetrics = [a['denominator'][mi,si].sum(),a['response'][mi,si].sum(),
+                            a['failures'][mi,si].sum(),a['within'][mi,si,:,1].sum()]
+                if metrics[mi,si,0]!=expected or not np.array_equal(metrics[mi,si],hmetrics):
+                    raise ValueError('All-photon scored denominator mismatch')
+        sample = row['sample']
+        if sample not in totals:
+            totals[sample] = make_histograms(plan); blocks[sample] = []
+        for k in a: totals[sample][k] += a[k]
+        blocks[sample].append((metrics,a['residual']))
+        files.append(dict(input=row,audit_sha256=file_sha256(audit_file),histograms_sha256=report['histograms_sha256']))
+        if file_sha256(hist_file)!=report['histograms_sha256']:
+            raise ValueError('Histogram changed during merge')
+    stage = checkpoint.with_name(checkpoint.name+'.staging')
+    stage.mkdir(parents=True,exist_ok=False)
+    samples={}
+    for sample in sorted(totals):
+        a=totals[sample]; parts=blocks[sample]
+        metrics=np.stack([b[0] for b in parts]); residuals=np.stack([b[1] for b in parts])
+        rng=np.random.default_rng(plan['noise_seed'])
+        weights=rng.multinomial(len(parts),np.ones(len(parts))/len(parts),size=bootstrap_draws)
+        cases={}
+        for mi,model in enumerate(plan['baselines']):
+            for si,sigma in enumerate(plan['sigmas_ps']):
+                m=metrics[:,mi,si].sum(axis=0); bm=weights @ metrics[:,mi,si]
+                bh=weights.astype(float) @ residuals[:,mi,si].astype(float)
+                quantiles=residual_quantiles(a['residual'][mi,si],re)
+                bq=np.asarray([residual_quantiles(h,re) for h in bh],float)
+                failure=np.divide(100*bm[:,2],bm[:,0],out=np.full(len(bm),np.nan),where=bm[:,0]>0)
+                good=np.divide(100*bm[:,3],bm[:,0],out=np.full(len(bm),np.nan),where=bm[:,0]>0)
+                interval=lambda v: np.nanpercentile(v,[2.5,97.5]).tolist() if np.isfinite(v).any() else [None,None]
+                cases[model['name']+'_'+str(sigma)+'ps']=dict(input=int(m[0]),reconstructed=int(m[1]),failed=int(m[2]),
+                    within100mm=int(m[3]),failure_pct=float(100*m[2]/m[0]) if m[0] else None,
+                    within100mm_pct=float(100*m[3]/m[0]) if m[0] else None,
+                    conditional_residual_q16_q50_q84_mm=quantiles,
+                    conditional_sigma68_mm=None if quantiles[0] is None else (quantiles[2]-quantiles[0])/2,
+                    file_bootstrap_95=dict(failure_pct=interval(failure),within100mm_pct=interval(good),
+                        median_residual_mm=interval(bq[:,1]),sigma68_mm=interval((bq[:,2]-bq[:,0])/2)))
+        name=sample+'.histograms.npz'
+        np.savez_compressed(stage/name,**a,z_edges_mm=ze,residual_edges_mm=re,sigmas_ps=plan['sigmas_ps'])
+        samples[sample]=dict(events=sum(r['input']['events'] for r in files if r['input']['sample']==sample),
+            files=len(parts),photon_stages=dict(zip(['all_geometric_downstream','outside_sensor_window','incident_in_window',
+            'not_detected','lost_holdoff','accepted'],map(int,a['stage_truth'].sum(axis=1)))),
+            cases=cases,histograms_file=name,histograms_sha256=file_sha256(stage/name))
+    report=dict(status='complete_accounting_physics_provisional',plan_sha256=plan['_sha256'],
+        reduction_code_revision=plan['code_revision'],merge_code_sha256=file_sha256(__file__),
+        files=len(files),events=sum(r['input']['events'] for r in files),samples=samples,inputs=files,
+        optical_transport_validated=False,trained_path_models=False,closure=True,
+        bootstrap=dict(unit='independent source ROOT file, all photons kept together',draws=bootstrap_draws,
+            seed=plan['noise_seed'],interval='percentile 95%; statistical only, not transport/model uncertainty'),
+        residual_quantile_bin_width_mm=float(np.diff(re).max()),
+        selection=plan['selection'],scope=plan['scope'],target=plan['target'])
+    with (stage/'summary.json').open('x') as f: json.dump(report,f,indent=2,allow_nan=False)
+    stage.rename(checkpoint)
+    print('MERGED',len(files),report['events'],checkpoint,flush=True)
+    return report
+
+
 def main():
     if not os.environ.get('SLURM_JOB_ID'):
         raise RuntimeError('Raw campaign analysis requires Slurm')
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--plan',required=True); ap.add_argument('--output',required=True)
     ap.add_argument('--task',type=int,default=int(os.environ.get('SLURM_ARRAY_TASK_ID','0')))
+    ap.add_argument('--merge',type=Path,help='New immutable aggregate checkpoint; no raw ROOT reads')
     args=ap.parse_args()
     plan_path=Path(args.plan); plan=json.loads(plan_path.read_text()); plan['_sha256']=file_sha256(plan_path)
     for name,digest in plan['code_sha256'].items():
-        if file_sha256(Path(__file__).parent/name)!=digest:
+        if file_sha256((plan_path.parent if args.merge else Path(__file__).parent)/name)!=digest:
             raise ValueError('Analysis code checksum mismatch: '+name)
     manifest=Path(plan['input_manifest'])
     if file_sha256(manifest)!=plan['input_manifest_sha256']:
         raise ValueError('Input manifest checksum mismatch')
+    if file_sha256(Path(plan['reference_release'])/'plan.json')!=plan['reference_plan_sha256']:
+        raise ValueError('Corrected reference-plan checksum mismatch')
     rows=json.loads(manifest.read_text())
     if len(rows)!=1648 or sum(r['events'] for r in rows)!=40000:
         raise ValueError('Campaign event/file count mismatch')
@@ -201,6 +321,9 @@ def main():
     if len(set(identities))!=len(identities):
         raise ValueError('Duplicate sample event index')
     make_histograms(plan)
+    if args.merge:
+        merge_campaign(rows,plan,Path(args.output),args.merge)
+        return
     chunk=plan['files_per_task']; start=args.task*chunk
     if start<0 or start>=len(rows):
         raise ValueError('Invalid array task')
