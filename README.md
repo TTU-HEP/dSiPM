@@ -157,6 +157,11 @@ sensor-stage count and response/residual closure before publishing a checkpoint.
 It reports 500-draw source-file bootstrap intervals, separately by particle and
 energy. Those intervals describe statistical uncertainty only; they do not cover
 the unresolved transport model, path ambiguity or electronics assumptions.
+After this strict merge, `studyDepthReconstruction.py campaign-plot --input
+CHECKPOINT --plan all_photon_plan.json --output NEW_DIRECTORY --baseline axial
+--sigma-ps 50` writes three individual figures for every sample. It requires all
+40,000 events, checks the pinned plan and each histogram hash/closure before
+writing any plot, and records model and acquisition assumptions in each manifest.
 
 ## Comparison models and scope
 

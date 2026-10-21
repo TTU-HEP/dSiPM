@@ -188,6 +188,60 @@ def plot(args):
     print(f"Saved {len(products)} truth/reconstruction response sets in {target}")
 
 
+def plot_campaign(args):
+    """Only a complete, hash-checked campaign checkpoint may feed paper plots."""
+    from reduceDepthCampaign import residual_quantiles
+    directory=Path(args.input)
+    summary=json.loads((directory/'summary.json').read_text())
+    plan=json.loads(Path(args.plan).read_text())
+    if file_sha256(args.plan)!=summary['plan_sha256']:
+        raise ValueError('Campaign plot reduction-plan checksum mismatch')
+    mi=[m['name'] for m in plan['baselines']].index(args.baseline)
+    expected={p+'_'+str(e)+'gev' for p in ('eplus','piplus') for e in (10,30,100,300)}
+    if (summary['status']!='complete_accounting_physics_provisional' or not summary['closure']
+            or summary['files']!=1648 or summary['events']!=40000 or set(summary['samples'])!=expected
+            or any(s['events']!=5000 for s in summary['samples'].values())):
+        raise ValueError('Plots require the complete separately validated 40,000-event checkpoint')
+    products=[]
+    for sample,row in sorted(summary['samples'].items()):
+        name=row['histograms_file']
+        if Path(name).name!=name or file_sha256(directory/name)!=row['histograms_sha256']:
+            raise ValueError('Campaign plot histogram path/hash mismatch')
+        with np.load(directory/name,allow_pickle=False) as h:
+            points=np.flatnonzero(h['sigmas_ps']==args.sigma_ps)
+            if len(points)!=1:
+                raise ValueError('Unknown timing assumption in checkpoint')
+            si=int(points[0])
+            counts=h['response'][mi,si]; inputs=h['denominator'][mi,si]; failed=h['failures'][mi,si]
+            residual=h['depth_residual'][mi,si]; within=h['within'][mi,si,:,1]
+            case=row['cases'][args.baseline+'_'+str(int(args.sigma_ps))+'ps']
+            if (not np.array_equal(counts.sum(axis=1)+failed,inputs)
+                    or not np.array_equal(residual.sum(axis=1),counts.sum(axis=1))
+                    or int(inputs.sum())!=case['input'] or int(failed.sum())!=case['failed']
+                    or int(within.sum())!=case['within100mm']):
+                raise ValueError('Campaign plot response/event/coverage closure failure')
+            product=dict(truth_edges_mm=h['z_edges_mm'].tolist(),reco_edges_mm=h['z_edges_mm'].tolist(),
+                counts=counts.tolist(),input_by_truth=inputs.tolist(),unreconstructed_by_truth=failed.tolist(),
+                within100mm_by_truth=within.tolist(),conditional_residual_q16_q50_q84_mm=[
+                    residual_quantiles(v,h['residual_edges_mm']) for v in residual],
+                normalization='all scored accepted individual photons per true-Z bin, including failures',
+                source_summary_sha256=file_sha256(directory/'summary.json'),source_histograms_sha256=row['histograms_sha256'],
+                reduction_plan_sha256=summary['plan_sha256'],sample=sample,case=case,
+                baseline=plan['baselines'][mi],sensor_contract=plan['contract'],
+                entrance_sigma_ps=plan['entrance_sigma_ps'],scope=plan['scope'],selection=plan['selection'],
+                optical_transport_validated=summary['optical_transport_validated'],
+                quantile_bin_precision_mm=summary['residual_quantile_bin_width_mm'])
+        particle,energy=sample.split('_')
+        label=('e+' if particle=='eplus' else 'pi+')+' '+energy[:-3]+' GeV'
+        label+='\n'+('Unfitted axial baseline' if args.baseline=='axial' else 'Frozen historical baseline')
+        label+='; '+str(int(args.sigma_ps))+' ps'
+        products.append((sample,product,label))
+    target=Path(args.output);target.mkdir(parents=True,exist_ok=False)
+    for sample,product,label in products:
+        render_response(product,target/sample,label=label)
+    print('Saved',len(products),'complete-campaign response sets in',target)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -212,6 +266,12 @@ def main():
     plots.add_argument("--output", required=True); plots.add_argument("--label", required=True)
     plots.add_argument("--method", choices=["fixed", "radius", "radius_delay", "neighbour"])
     plots.add_argument("--sigma-ps", type=float); plots.set_defaults(run=plot)
+    campaign=sub.add_parser("campaign-plot",help="All eight samples from a complete hash-checked campaign checkpoint")
+    campaign.add_argument("--input",required=True);campaign.add_argument("--output",required=True)
+    campaign.add_argument("--plan",required=True)
+    campaign.add_argument("--sigma-ps",type=int,default=50)
+    campaign.add_argument("--baseline",choices=["axial","historical_fixed"],default="axial")
+    campaign.set_defaults(run=plot_campaign)
     args = ap.parse_args(); args.run(args)
 
 

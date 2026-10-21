@@ -316,6 +316,42 @@ class AllPhotonCampaignTests(unittest.TestCase):
         self.assertEqual(residual_quantiles([0,0],[-2,0,2]),[None]*3)
         np.testing.assert_allclose(residual_quantiles([1,1],[-2,0,2]),[-1.36,0.,1.36])
 
+    def test_campaign_plot_requires_full_checkpoint_plan_and_hashes(self):
+        from unittest.mock import patch
+        from dsipm.io import file_sha256
+        from reduceDepthCampaign import make_histograms
+        from studyDepthReconstruction import plot_campaign
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            plan=dict(baselines=[dict(name='axial',n_eff=1.49)],z_edges_mm=[0,1000,2000],
+                residual_edges_mm=[-2000,0,2000],sigmas_ps=[50],contract={},entrance_sigma_ps=0,scope='test',selection='test')
+            path=root/'plan.json';path.write_text(json.dumps(plan))
+            a=make_histograms(plan);a['response'][0,0,0,1]=1;a['response'][0,0,1,0]=1
+            a['failures'][0,0,0]=1;a['denominator'][0,0]=[2,1]
+            a['depth_residual'][0,0,0,1]=1;a['depth_residual'][0,0,1,0]=1
+            samples={}
+            for p in ('eplus','piplus'):
+                for e in (10,30,100,300):
+                    sample=p+'_'+str(e)+'gev';name=sample+'.npz'
+                    np.savez_compressed(root/name,**a,z_edges_mm=plan['z_edges_mm'],
+                        residual_edges_mm=plan['residual_edges_mm'],sigmas_ps=[50])
+                    samples[sample]=dict(events=5000,histograms_file=name,histograms_sha256=file_sha256(root/name),
+                        cases={'axial_50ps':dict(input=3,failed=1,within100mm=0)})
+            summary=dict(status='complete_accounting_physics_provisional',closure=True,files=1648,events=40000,
+                samples=samples,plan_sha256=file_sha256(path),optical_transport_validated=False,residual_quantile_bin_width_mm=2000)
+            (root/'summary.json').write_text(json.dumps(summary))
+            args=SimpleNamespace(input=str(root),plan=str(path),output=str(root/'plots'),sigma_ps=50,baseline='axial')
+            with patch('studyDepthReconstruction.render_response') as render:
+                plot_campaign(args)
+            self.assertEqual(render.call_count,8)
+            self.assertEqual(render.call_args.args[0]['input_by_truth'],[2,1])
+            args.output=str(root/'must_not_exist')
+            (root/'piplus_300gev.npz').write_bytes(b'corrupt')
+            with self.assertRaisesRegex(ValueError,'hash mismatch'): plot_campaign(args)
+            self.assertFalse(Path(args.output).exists())
+            path.write_text('{}')
+            with self.assertRaisesRegex(ValueError,'plan checksum'): plot_campaign(args)
+
 
 class DepthSensorTests(unittest.TestCase):
     def test_matched_zero_and_nonzero_noise(self):
