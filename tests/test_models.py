@@ -1,27 +1,13 @@
 from __future__ import annotations
-
 import unittest
-
 import numpy as np
-
-from dsipm.full_detector import (
-    AnalogSiPMScenario,
-    FullDetectorPhotonEvent,
-    FullDetectorScenario,
-    ORIGINAL_DREAM_FIBER_DIAMETER_MM,
-    ORIGINAL_DREAM_TOWER_RADIUS_MM,
-    ORIGINAL_DREAM_TOWER_SPACING_MM,
-    digitize_analog_sipm_event,
-    digitize_full_detector_event,
-    global_cell_ids,
-    hgdream_cherenkov_channel_ids,
-    hgdream_cherenkov_channel_layout,
-    localize_full_detector_coordinates,
-    original_dream_pmt_centers,
-    original_dream_pmt_channel_ids,
-)
-from dsipm.root_io import OLD_2025_X_SHIFT, OLD_2025_Y_SHIFT
-
+from dsipm.sensors import (AnalogSiPMScenario, FullDetectorPhotonEvent, FullDetectorScenario,
+    digitize_analog_sipm_event, digitize_full_detector_event, global_cell_ids,
+    histogram_observables, partial_recharge_weights, scope_kernel, scope_waveform,
+    ChannelReadoutConfig, channel_readout)
+from dsipm.geometry import (ORIGINAL_DREAM_FIBER_DIAMETER_MM, ORIGINAL_DREAM_TOWER_RADIUS_MM,
+    ORIGINAL_DREAM_TOWER_SPACING_MM, hgdream_cherenkov_channel_ids, hgdream_cherenkov_channel_layout,
+    original_dream_pmt_centers, original_dream_pmt_channel_ids)
 
 def make_event(*, sensor_id, x_mm, time_ns, rod_ix=None, rod_iy=None) -> FullDetectorPhotonEvent:
     x = np.asarray(x_mm, dtype=np.float64)
@@ -59,7 +45,7 @@ def make_event(*, sensor_id, x_mm, time_ns, rod_ix=None, rod_iy=None) -> FullDet
     )
 
 
-class FullDetectorTests(unittest.TestCase):
+class SensorComparisonTests(unittest.TestCase):
     def test_hgdream_cherenkov_layout_matches_installed_channel_counts(self):
         layout = hgdream_cherenkov_channel_layout()
         self.assertEqual(layout.n_channels, 448)
@@ -105,46 +91,6 @@ class FullDetectorTests(unittest.TestCase):
         self.assertGreaterEqual(int(channel_ids[0]), 0)
         self.assertEqual(int(channel_ids[1]), -1)
 
-    def test_reference_fiber_centers_localize_to_zero(self):
-        fiber = np.arange(4, dtype=np.int64)
-        result = localize_full_detector_coordinates(
-            -OLD_2025_X_SHIFT,
-            -OLD_2025_Y_SHIFT,
-            fiber,
-        )
-        local_x, local_y, sensor_x, sensor_y, rod_ix, rod_iy, sensor_id = result
-        np.testing.assert_allclose(local_x, 0.0, atol=1.0e-12)
-        np.testing.assert_allclose(local_y, 0.0, atol=1.0e-12)
-        # The mean of the four physical fiber centers defines the center of the
-        # rod in the detector frame used by every event-display panel.
-        np.testing.assert_allclose(np.mean(sensor_x), 0.0, atol=1.0e-12)
-        np.testing.assert_allclose(np.mean(sensor_y), 0.0, atol=1.0e-12)
-        np.testing.assert_allclose(
-            sensor_x,
-            10.0 * (np.mean(OLD_2025_X_SHIFT) - OLD_2025_X_SHIFT),
-            atol=1.0e-12,
-        )
-        np.testing.assert_allclose(
-            sensor_y,
-            10.0 * (np.mean(OLD_2025_Y_SHIFT) - OLD_2025_Y_SHIFT),
-            atol=1.0e-12,
-        )
-        np.testing.assert_array_equal(rod_ix, 0)
-        np.testing.assert_array_equal(rod_iy, 0)
-        self.assertEqual(len(np.unique(sensor_id)), 4)
-
-    def test_translated_rod_keeps_local_coordinate(self):
-        fiber = np.asarray([2], dtype=np.int64)
-        x = -OLD_2025_X_SHIFT[fiber] + 3 * 0.4 + 0.013
-        y = -OLD_2025_Y_SHIFT[fiber] - 2 * 0.4 - 0.021
-        local_x, local_y, _, _, rod_ix, rod_iy, _ = (
-            localize_full_detector_coordinates(x, y, fiber)
-        )
-        np.testing.assert_allclose(local_x, 0.13, atol=1.0e-12)
-        np.testing.assert_allclose(local_y, -0.21, atol=1.0e-12)
-        np.testing.assert_array_equal(rod_ix, 3)
-        np.testing.assert_array_equal(rod_iy, -2)
-
     def test_same_local_spad_in_different_fibers_has_different_global_id(self):
         event = make_event(sensor_id=[10, 11], x_mm=[0.001, 0.001], time_ns=[1.0, 1.1])
         ids = global_cell_ids(event, 20.0)
@@ -189,6 +135,78 @@ class FullDetectorTests(unittest.TestCase):
         self.assertEqual(result.n_detected, 2)
         self.assertAlmostEqual(result.charge_pe, 2.0)
 
+class PulseShapeTests(unittest.TestCase):
+    def test_partial_recharge_tracks_each_cell_independently(self):
+        tau = 10.0
+        cells = np.asarray([2, 1, 2, 1])
+        times = np.asarray([0.0, 0.0, tau * np.log(2.0), 100.0])
+        weights = partial_recharge_weights(cells, times, tau)
+        np.testing.assert_allclose(weights, [1.0, 1.0, 0.5, 1.0 - np.exp(-10.0)])
 
-if __name__ == "__main__":
+    def test_scope_kernel_has_unit_area(self):
+        kernel = scope_kernel(0.01)
+        self.assertAlmostEqual(float(np.sum(kernel)), 1.0)
+        self.assertTrue(np.all(kernel >= 0.0))
+
+    def test_scope_waveform_preserves_integral_away_from_right_edge(self):
+        impulses = np.zeros(2000)
+        impulses[100] = 2.0
+        impulses[300] = 3.0
+        waveform = scope_waveform(impulses, bin_width_ns=0.01)
+        self.assertAlmostEqual(float(np.sum(waveform)), 5.0, places=10)
+
+    def test_histogram_observables(self):
+        hist = np.asarray([1.0, 2.0, 1.0, 0.0])
+        edges = np.arange(5, dtype=np.float64)
+        values = histogram_observables(hist, edges, prompt_end_ns=2.0)
+        self.assertEqual(values["integral"], 4.0)
+        self.assertAlmostEqual(values["prompt_fraction"], 0.75)
+        self.assertAlmostEqual(values["mean_time_ns"], 1.5)
+        self.assertAlmostEqual(values["central80_width_ns"], 2.0)
+
+
+class SharedReadoutTests(unittest.TestCase):
+    def test_channel_buffer_is_independent_for_each_readout_channel(self):
+        result = channel_readout(
+            np.asarray([0, 1, 2, 3]),
+            np.asarray([0, 0, 0, 0]),
+            np.asarray([1.0, 2.0, 3.0, 4.0]),
+            n_spads_axis=4,
+            config=ChannelReadoutConfig(
+                spads_per_channel_side=2,
+                timestamp_buffer_depth=1,
+                channel_resolving_time_ns=0.0,
+                count_bits=8,
+                timestamp_bits=12,
+                address_bits=4,
+                event_overhead_bits=16,
+            ),
+        )
+        self.assertEqual(result.active_channels, 2)
+        self.assertEqual(result.counted_hits, 4)
+        self.assertEqual(result.timestamp_records, 2)
+        self.assertEqual(result.overflowed_channels, 2)
+        self.assertEqual(result.payload_bits, 16 + 2 * (4 + 8) + 2 * 12)
+
+    def test_channel_resolving_time_and_count_saturation_are_separate(self):
+        result = channel_readout(
+            np.asarray([0, 1, 2, 3]),
+            np.asarray([0, 0, 0, 0]),
+            np.asarray([1.00, 1.02, 1.08, 1.20]),
+            n_spads_axis=4,
+            config=ChannelReadoutConfig(
+                spads_per_channel_side=4,
+                timestamp_buffer_depth=8,
+                channel_resolving_time_ns=0.05,
+                count_bits=2,
+            ),
+        )
+        self.assertEqual(result.accepted_hits, 4)
+        self.assertEqual(result.counted_hits, 3)
+        self.assertEqual(result.count_saturated_channels, 1)
+        self.assertEqual(result.timestamp_candidates, 3)
+        self.assertEqual(result.resolving_lost_hits, 1)
+        self.assertEqual(result.timestamp_records, 3)
+
+if __name__ == '__main__':
     unittest.main()

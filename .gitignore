@@ -1,6 +1,10 @@
 *png
 *root
 __pycache__/
+*.npz
+calibration_cache/
+heldout_cache/
+calibration.json
 *.py[cod]
 results/
 comparison_output/

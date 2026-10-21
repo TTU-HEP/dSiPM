@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .depth_geometry import localize_endpoints, world_to_calorimeter, rotation
-from .depth_reconstruction import DepthContract, PhotonObservations
+from .geometry import localize_endpoints, world_to_calorimeter, rotation
+from .depth import DepthContract, PhotonObservations
 
 
 def file_sha256(path):

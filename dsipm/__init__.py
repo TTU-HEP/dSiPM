@@ -1,13 +1,8 @@
-"""Reusable digital-SiPM response simulation utilities."""
+"""Small DREAM/FLASH photon-response and depth-reconstruction core.
 
-from .config import DeviceConfig, load_device_catalog
-from .digitizer import DigitizedEvent, PhotonEvent, digitize_event, legacy_pde
+Use geometry, sensors, depth and io directly. No plotting, ROOT import or
+production submission occurs at package import time.
+"""
+from .depth import DepthContract, PhotonObservations, fit_calibration, reconstruct
 
-__all__ = [
-    "DeviceConfig",
-    "DigitizedEvent",
-    "PhotonEvent",
-    "digitize_event",
-    "legacy_pde",
-    "load_device_catalog",
-]
+__all__ = ["DepthContract", "PhotonObservations", "fit_calibration", "reconstruct"]

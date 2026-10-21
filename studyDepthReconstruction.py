@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Calibrate and evaluate immutable compact caches; no event generation.
 
-See docs/DEPTH_RECONSTRUCTION.md. Raw TTU ROOT extraction has a separate
+See README.md. Raw TTU ROOT extraction has a separate
 Slurm-only adapter. ``scan`` never tunes on the held-out evaluation input.
 """
 import argparse
@@ -11,10 +11,10 @@ import subprocess
 
 import numpy as np
 
-from dsipm.depth_io import load_cache, file_sha256
-from dsipm.depth_reconstruction import Calibration, fit_calibration, reconstruct
-from dsipm.depth_observations import smear_observations
-from dsipm.depth_evaluation import evaluate
+from dsipm.io import load_cache, file_sha256
+from dsipm.depth import Calibration, fit_calibration, reconstruct
+from dsipm.sensors import smear_observations
+from dsipm.depth import evaluate
 
 
 def calibrate(args):
@@ -47,7 +47,7 @@ def scan(args):
         dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=Path(__file__).parent, text=True))
     except (OSError, subprocess.CalledProcessError):
         revision, dirty = None, None
-    paths = list((Path(__file__).parent/"dsipm").glob("depth_*.py"))+[Path(__file__)]
+    paths = list((Path(__file__).parent/"dsipm").glob("*.py"))+[Path(__file__)]
     code_hashes = {p.name: file_sha256(p) for p in sorted(paths)}
     manifest = dict(status="development_diagnostic_not_certified_physics", source_cache=meta,
         calibration_sha256=calibration.sha256, calibration_mode="fixed_zero_jitter",

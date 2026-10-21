@@ -1,599 +1,165 @@
-# Digital SiPM studies for DREAM/FLASH
+# DREAM / FLASH photon analysis
 
-## Timing-based depth reconstruction (development, October 2026)
+A small, NumPy-based core for sensor response and timing-based fiber-depth
+reconstruction. It reads existing photons; it does not generate new showers.
+The original main-branch scripts are left untouched as legacy references.
 
-The new, separately versioned depth workflow is documented in
-[docs/DEPTH_RECONSTRUCTION.md](docs/DEPTH_RECONSTRUCTION.md). It integrates
-radius/delay calibration and neighbouring-light inference with corrected
-geometry, matched timestamp scans, explicit failures and event-block scoring.
-Start with `studyDepthReconstruction.py --help`; it does not generate events.
-Historical scripts, checkpoints and published plot inputs are unchanged.
-Software closure is **not** certification of the unresolved production optical
-transport or of detector depth resolution. The older rebuild/status statements
-below describe historical products, not validation of this new study.
-
-This repository contains the original dSiPM occupancy studies and a new,
-deterministic device-comparison workflow.  The new code is designed to do two
-jobs on the same DREAMSim optical-photon events:
-
-1. reproduce the historical pitch scans and full-event one-hit dead-time model;
-2. compare those idealizations with the observable counts and timing records of
-   current dSiPM architectures.
-
-The original scripts remain in place. Historical closure starts with
-`reproduceStudies.py`; current physical requirement work starts with
-`studyFlashV2.py`. Use `runDeviceComparison.py` for architecture and output
-policy studies.
-
-## Canonical CPAD 2026 and JINST rebuild
-
-The reviewed output set is rebuilt from the local ROOT inputs with one driver:
-
-```bash
-source /opt/homebrew/bin/thisroot.sh
-/opt/homebrew/opt/python@3.13/bin/python3.13 rebuildAllOutputs.py
-```
-
-The command runs the tests, reproduces the CPAD 2025 analysis, regenerates the
-corrected one-fiber, fill-factor, channel-architecture, and full-detector
-studies with 500 event-bootstrap replicas, stages the approved figures, and
-compiles both final documents:
+## Core
 
 ```text
-cpad2026/CPAD2026_FLASH_rebuild.pdf
-paper/flash_hgdream_jinst.pdf
+dsipm/
+  geometry.py   corrected coordinates, DREAM/HG-DREAM layouts, ideal ray reference
+  sensors.py    FLASH holdoff, analog recharge, matched clocks, readout/pulse proxies
+  depth.py      model contract, calibration, reconstruction, truth-based evaluation
+  io.py         immutable caches and hash-checked, Slurm-only existing-ROOT reader
+studyDepthReconstruction.py   one analysis entry point: calibrate / scan
+sensor_workflow.json         one canonical sensor configuration
+tests/                      focused physics and end-to-end regressions
 ```
 
-`results/cpad2026-rebuild/rebuild_manifest.json` records the exact commands
-and SHA-256 checksums for the shared `sensor_workflow.json`, all four ROOT
-inputs, and both final PDFs. The talk's
-claim-to-evidence map and continuity with CPAD 2025 are documented in
-`cpad2026/CPAD2026_STORY.md`.
-
-Every sensor-assumption plot reads `sensor_workflow.json`. It is the single
-source for the FLASH reference PDE, pitch, recovery, channel resources, random
-seed, factorized fill-factor proxy, and all scan grids. To rebuild only those
-plots plus the staged talk and paper, use:
+Calibration/evaluation truth stays outside the measured-observation interface,
+even though related functions now live together. Imports do not load ROOT,
+generate events, submit jobs, or produce plots.
 
 ```bash
-/opt/homebrew/opt/python@3.13/bin/python3.13 rebuildAllOutputs.py --sensor-only
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+python studyDepthReconstruction.py --help
 ```
 
-Each study summary stores the workflow SHA-256. Cached full-detector event
-tables are rejected when their recorded workflow hash does not match the
-current configuration.
+The optional ROOT reader additionally needs `uproot` and `awkward`. Python
+3.11 or newer is required. NumPy is the only required dependency for the core.
 
-The workflow requires Python 3.11 or newer with NumPy and PyROOT.  On the local
-Mac used for this study, `/opt/homebrew/bin/python3.13` provides both.
+## Reconstruction
 
-## Current scientific status
-
-The October 2026 audit found that the historical study divided a 3 mm sensor
-width into pitch-sized bins but applied those bins to a 1 mm fiber-local plot
-range. A labelled pitch therefore acted as `pitch / 3` in physical DREAMSim
-coordinates. The historical products remain valuable as exact software and
-provenance closure, but they do **not** define a physical FLASH pitch.
-
-The current analysis uses unscaled millimeter coordinates on a centered
-3 x 3 mm sensor. Its main conclusion is a PDE-by-pitch-by-recovery surface,
-not a universal 25 um working point. See `STUDY_AUDIT_2026.md` and
-`results/flash-study-v2-final/`.
-
-The detector-level question is now the primary study: if the present
-HG-DREAM optical readout is replaced by FLASH-like dSiPMs, which energy,
-imaging, and timing observables remain unbiased? The first full-detector pass
-is in `results/full-detector-v1/` and is generated by
-`studyFullDetector.py`. It maps every explicit optical photon to its rod,
-fiber, and local SPAD cell before applying PDE and recovery.
-
-## Full-detector replacement study
-
-Run the checked-in electron and pion samples with:
-
-```bash
-/opt/homebrew/bin/python3.13 studyFullDetector.py
-```
-
-The current samples contain 1,000 100 GeV positron events and 100 90 GeV pion
-events. At 20 um pitch, 20% PDE, and 4.3 ns recovery, the recovery survival is
-97.79% for positrons and 99.43% for pions. Electron calibration therefore
-shifts the pion Cherenkov response by +1.67% relative to the matched 20% PDE
-only baseline. The slightly smaller pion RMS/mean after recovery is saturation
-compression, not an improvement in calorimeter resolution.
-
-A conventional-readout benchmark is now evaluated on the same explicit
-Cherenkov photons. It is a representative Onsemi MicroFC-30035 C-Series proxy:
-31% PDE at 420 nm, 4,774 data-sheet microcells, and an 82 ns recharge constant.
-The summed partial-recharge model retains 88.54% of electron charge and 96.93%
-of pion charge. Electron calibration then produces a +9.47% pion Cherenkov
-shift relative to a matched 31% PDE-only baseline, compared with +1.67% for
-the FLASH point above. This is an optimistic sensor-only proxy, not a complete
-model of the installed HG-DREAM readout: it excludes wavelength-dependent PDE,
-recharge-dependent triggering, crosstalk, afterpulsing, electronics noise, and
-waveform integration.
-
-This pass has one important boundary: the explicit optical-photon branch is
-populated for Cherenkov photons but not for scintillation photons. Stored
-`sum3dCC` and explicit Cherenkov counts are correlated, but they are not the
-same observable and are never mixed silently. A final dual-readout result
-requires matched full-detector samples with explicit Cherenkov and
-scintillation photons from one configuration.
-
-The full-detector output includes machine-readable event tables, a run
-summary, and a `plot_manifest.csv` that states the question and intended claim
-for every headline figure. The five plot families test branch closure, local
-occupancy, transverse image survival, the pitch/recovery requirement, and
-event-level response propagation.
-
-## Producing matched DREAMSim samples
-
-The HPCC production scripts are under `production/`. They adapt Samuel
-McKinley's public `dSiPM_SPAD_NN` batch workflow, pin the required DREAMSim
-commit, use deterministic random seeds, and validate every ROOT file and its
-required optical-photon branches inside the SLURM job.
-
-Production is submitted only from a clean dSiPM commit that is shared by the
-local development branch and the HPCC checkout. Each campaign snapshots its
-launcher, validator, and campaign table and records both the dSiPM and DREAMSim
-commits plus file checksums in the manifest and validation sidecars.
-
-Raw production ROOT files remain on HPCC. `production/reduce_dreamsim_output.py`
-uses uproot to apply the same full-detector geometry and sensor-response code
-there, writing compact per-event tables, additive histograms, and provenance
-summaries. `production/merge_dreamsim_reductions.py` checks every reduction
-against the submission manifest before creating the sample-level inputs used
-for local CPAD/JINST plotting.
-
-Start with `production/campaigns/cpad2026_pilot_100gev.tsv`. It produces two
-10-event jobs for both positrons and pions at 100 GeV. The larger
-`cpad2026_one_fiber_5k.tsv` campaign supplies matched 10, 30, 100, and 300 GeV
-samples. Its energy-dependent job split is based on the validated 100 GeV
-pilot runtime and preserves 5,000 events per particle/energy point with at
-least 25% wall-time margin against the 12-hour job request. See
-`production/README.md` for the exact commands and scientific scope.
-
-The Samuel-pinned DREAMSim source tracks the complete shower but retains
-optical photons only from the central rod. These productions answer the
-one-fiber/one-rod occupancy question. They are not a substitute for the later
-full-detector production with explicit Cherenkov and scintillation photons.
-
-## Quick start
-
-The local two-event file is enough to test the complete comparison path:
-
-```bash
-/opt/homebrew/bin/python3.13 reproduceStudies.py quick
-```
-
-This first reproduces Chris Madrid's historical pitch scan only: 1, 10, 25,
-50, 75, and 100 um channels with unity photon detection and one hit per channel
-per event.  The preset selects production fiber 0, matching the single-fiber
-study in the slides.  It writes results under:
+z is depth in mm from the entrance face. t is arrival time in ns relative to
+the entrance timing layer. The prompt beta=1 production-front approximation is
 
 ```text
-results/quick/10GeV_eplus_2evt/
+c t = a_z z + a_x x + a_y y + b + n_group kappa (L-z)
+z = (n_group kappa L + a_x x + a_y y + b - c t) / (n_group kappa - a_z)
 ```
 
-An output directory must be new or empty.  This prevents a rerun from silently
-overwriting an earlier comparison.
+kappa is optical path / axial distance, not a measured quantity. Phase indices
+set the ideal guidance bound; the independent group index sets flight time.
+Default assumptions are L=2000 mm, core radius=0.4 mm and indices 1.49/1.42,
+not the supplied simplified study's 1.504 model. There is no implicit universal
+effective index for the optional historical fixed-path comparison.
 
-Run the 2025 electron or pion studies with the slide-matched plots:
+`DepthContract.from_workflow()` loads canonical PDE/pitch/holdoff and pins the
+complete configuration hash. It also accepts a workflow JSON **path**. For the
+rotated production geometry, use `geometry.dreamsim_front_contract`, passing
+the workflow's sensor values/hash; this returns the contract, entrance time
+and entrance point. World-to-calorimeter is Ry @ Rx for the pinned two-degree
+rotations. Depth is calo_z+1000, not the historical doubled scale. Coordinates,
+fiber containment, replica limits and the downstream plane are checked.
+
+Three estimators share exactly the same accepted photons:
+
+- `radius`: calibrated median kappa conditional on pixel-centre exit radius.
+- `radius_delay`: also conditions on measured delay to the first photon of that
+  rod/event; exact zero has its own bin.
+- `neighbour`: selects among equal-probability kappa quantiles using same-event
+  neighbouring clean light; retains candidates for ambiguity diagnostics.
+
+Only physical inverses seed the neighbour density. Smoothing and self-photon
+subtraction use the same kernel. Leave-one-rod-out is an explicit ablation.
+No support uses the actual calibrated 50% median, not the 55% candidate. If
+there is no physical solution, z is NaN with an unreconstructed status; no
+unphysical distance is clipped into the detector. A tiny endpoint-roundoff
+tolerance is not a boundary-repair procedure. Near-face direct exits do not
+require TIR before a wall they never encounter.
+
+`fit_calibration(observations, kappa_truth, contract, source_sha256=...)` is the
+only estimator input taking truth. Inference rejects overlapping calibration
+and evaluation events and mismatched geometry, optics, workflow, gate or sensor
+models. Hold out tuning events as well; never choose cuts/windows on final test
+scores. Defaults are development assumptions, not an optimized performance.
+
+## Data and matched scans
+
+`sensors.make_observations` accepts a corrected FullDetectorPhotonEvent-compatible
+object. Only measured time, local endpoint, sensor/rod identity and sensor-centre
+coordinates are read. Use `<source_SHA256>:<original_entry>` event keys and keep
+original photon indices. No inference function reads true z or emission time.
+
+PDE, stored-time gate and per-fiber SPAD holdoff precede timestamp smearing.
+PDE, photon jitter and the event-common entrance-clock error use separate keyed
+streams. The same photons and standard-normal draws are used at 0/50/200/500 ps;
+input order and batching cannot change selection. Existing validated masks may
+be reused, with unknown detection/loss counts left unknown unless supplied.
+
+`io.save_cache` creates a new directory with `photons.npz` and `metadata.json`.
+Truth columns are separate. A calibration cache must explicitly be marked
+eligible with documented `provenance['truth_validation']`. That is a scientific
+audit decision, not proof the software can establish automatically. Do not mark
+an exit-direction proxy or transport-bug-derived path factor as validated truth.
+The raw reader requires Slurm and checks complete ROOT hashes before/after an
+exhausted read. Check the validated sidecar/production manifest upstream too.
+
+After preparing disjoint, validated caches with `timestamp_sigma_ns=0`:
 
 ```bash
-/opt/homebrew/bin/python3.13 reproduceStudies.py 2025-electron
-/opt/homebrew/bin/python3.13 reproduceStudies.py 2025-pion
+python studyDepthReconstruction.py calibrate --input calibration_cache --output calibration.json
+python studyDepthReconstruction.py scan --input heldout_cache --calibration calibration.json \
+  --output results/depth-scan --sigmas-ps 0 50 200 500 --clock-ps 0
 ```
 
-For commissioning, limit the run without changing the study definition:
-
-```bash
-/opt/homebrew/bin/python3.13 reproduceStudies.py 2025-electron \
-  --max-events 100 \
-  --output-root results/commissioning_100evt
-```
-
-Run one arbitrary ROOT file directly:
-
-```bash
-/opt/homebrew/bin/python3.13 runDeviceComparison.py input.root \
-  --profile real_devices \
-  --geometry student_2026 \
-  --max-events 100 \
-  --output results/my_comparison
-```
-
-The current-device comparison is deliberately separate from the 2025
-reproduction.  Add `--plot-style both` when both the comparison summary and
-historical slide products are useful in the same run.
-
-Select individual configurations instead of a profile:
-
-```bash
-/opt/homebrew/bin/python3.13 runDeviceComparison.py input.root \
-  --devices legacy_20um,litavis_2026,aspides_2025 \
-  --output results/selected_devices
-```
-
-List the available profiles and devices in `device_configs.json`.
-
-Reproduce only the capstone front-end assumptions on an available sample:
-
-```bash
-/opt/homebrew/bin/python3.13 runDeviceComparison.py input.root \
-  --profile capstone \
-  --geometry student_2026 \
-  --output results/capstone_frontend
-```
-
-## Reproducibility rules
-
-- The default random seed is `4307` and is saved in `run_manifest.json`.
-- Every device receives the same per-photon uniform and Gaussian random
-  variates for a given seed and event number.  A PDE or timing scan is therefore
-  a paired comparison rather than a set of unrelated random thinnings.
-- Every run snapshots the selected device parameters and records which effects
-  are implemented or still absent.
-- Existing output directories are not overwritten.
-- The historical and student coordinate transforms are named and selected
-  explicitly.
-- Full-detector plots keep the stored HG-DREAM and explicit-photon baselines
-  separate unless a same-photon calibration is available.
-
-## Geometry modes
-
-`runDeviceComparison.py --geometry ...` accepts:
-
-- `old_2025`: the early four fiber-dependent shifts retained for provenance;
-- `student_2026`: the current student shift-and-shrink transformation;
-- `original_mickey`: the fixed fiber placement retained by the student code;
-- `raw`: no alignment correction, only conversion from centimeters to
-  millimeters.
-
-The 2025 convenience studies and quick test use `old_2025`, the shift table in
-the repository revision that produced the slide study, and select production
-fiber 0.  The current local `simSPADs.py` mapping remains available as
-`student_2026` for later work.  The run manifest records both choices because
-several saved ROOT products predate reliable provenance.
-
-## Device model
-
-The current response chain is:
-
-```text
-DREAMSim Cherenkov-core photon
-  -> geometry and 0-40 ns selection
-  -> wavelength-dependent or constant PDE
-  -> chronological, non-paralyzable SPAD recovery
-  -> timing-response smearing and TDC quantization
-  -> timing-group/readout policy
-  -> count, timing-record, and payload summaries
-```
-
-Implemented timestamp policies include every accepted hit, first global hit,
-first/last global hits, first hit per timing group, and a fixed-bin histogram
-per timing group.
-
-The following effects are intentionally not yet included: dark counts,
-crosstalk, afterpulsing, hot-cell masking, angular PDE, detailed optical
-coupling, link arbitration, and power.  They are listed in every run manifest
-so plots from this stage cannot be mistaken for a complete electronics model.
-
-## Interpreting the real-device configurations
-
-`device_configs.json` records the maturity, source, and basis of every
-parameter.  Several current devices do not publish a numerical blue-light PDE
-curve.  Those entries use the capstone wavelength polynomial as an explicitly
-marked **proxy**, allowing architecture and recovery comparisons without
-claiming a device-specific photon yield.
-
-Important examples:
-
-- Litavis uses its published 10.17 um pitch, 4x4 grouping, 4.3 ns dead time,
-  37 ps TDC bin, and 1,145 ps FWHM response at 450 nm.  Its blue PDE remains a
-  proxy; the public 47% number is at 785 nm.
-- ASPIDES uses the public 30 um pitch, 20% working PDE, count plus first/last
-  timing, and 100 ps TDC bin.  The 40 ns recovery is marked as a proxy pending
-  full-chip measurements.
-- Sherbrooke PDC uses the minimum published 32 ns hold-off and count/flag
-  semantics.
-- DESY and DIGILOG configurations reduce timing information according to their
-  grouped architectures instead of pretending every SPAD exports a timestamp.
-
-The `payload_bits_proxy` variable is deliberately simple and transparent.  It
-is useful for relative comparisons, not a prediction of a final serialized
-link rate.
-
-## Output products
-
-Every run directory contains:
-
-- `run_manifest.json`: input metadata, seed, geometry, device snapshot, and
-  model limitations;
-- `event_summary.csv`: one row per event and device;
-- `device_summary.csv`: aggregate comparison table;
-- `comparison.root`: both compact run histograms and any historical ROOT
-  products requested by the plot style.
-
-The `slides` plotting style used by the 2025 presets additionally writes:
-
-- `historical_binning.json`: the exact plotting ranges and bin counts;
-- `photons_per_channel_overlay.png`: the normalized 10--100 um overlay from
-  the slides, including zero-occupancy channels;
-- `photon_distributions_25um.png` and `photon_distributions_100um.png`;
-- `deadtime_efficiency_25um.png` and `deadtime_efficiency_100um.png`;
-- `deadtime_efficiency_vs_pitch.png`.
-
-A full electron run also writes `historical_reference_validation.json`, which
-checks the regenerated XY binning and histogram integrals against
-`outfile_100_e+.root`.  The `2025-both` preset adds
-`photons_per_channel_electron_vs_pion.png`, the two-panel comparison used on
-the final slide, plus `deadtime_efficiency_electron_vs_pion.png` and its
-`electron_pion_efficiency_summary.csv` source table.
-
-The same preset now also creates a CPAD comparison layer without changing the
-validated historical products:
-
-- `deadtime_efficiency_electron_vs_pion_cpad.png` and `.pdf` place Litavis,
-  ASPIDES, DESY, DIGILOG, DPC3200, and Sherbrooke PDC on the old pitch-only
-  occupancy curves;
-- `cpad_timing_landscape.png` and `.pdf` compare the public FLASH 10--50 ps
-  target with published TDC and detector-response timing values;
-- `cpad_device_landscape.csv` records every plotted value, its maturity, basis,
-  and source.
-
-The 25 um FLASH marker in these historical products is now explicitly
-superseded as a physical design point. Competitor markers on that curve are
-only display-scaled pitch projections and should not appear as performance
-predictions. Public values and their maturity live in `cpad_benchmarks.json`,
-separately from the response assumptions in `device_configs.json`.
-
-These reproduce the later slide binning exactly: the 3 mm sensor width is
-divided by the requested channel pitch and displayed in the slide's -0.5 to
-0.5 mm mapped fiber coordinates. This 3:1 convention is the source of the
-physical-pitch correction. The other ranges are 0 to 0.5 mm radius, 5 to 40 ns
-in 700 bins (50 ps/bin), and 0 to 2000 mm production depth in 500 bins (4
-mm/bin).
-The ROOT objects retain names such as
-`nPhotons_xyt_all_25x25` and `nPhotons_xyt_oneHit_25x25`, so the original
-projection scripts can still inspect them.  The unused third axis is now a
-single aggregate bin (time for the XY product and event number for the other
-products), since the slides project it away.  The actual 50 ps timing binning
-is retained in the radius--time and production-depth--time products.
-
-The `comparison` plotting style writes the device-oriented retention, dead-time,
-timing-record, payload, time, and hit-SPAD multiplicity plots used for later
-real-device work.
-
-## Legacy pitch and recovery scan
-
-This scan separates labelled pitch from the full-event one-hit assumption but
-retains the historical display-coordinate scaling. It is maintained for exact
-closure and should not be used as a physical sensor requirement:
-
-```bash
-/opt/homebrew/bin/python3.13 scanFlashRequirements.py
-```
-
-The scan writes a source table, interpolated retention thresholds, a run
-manifest, and the slide-ready
-`flash_pitch_recovery_scan.png/.pdf` under
-`results/flash-requirements-2026/`. These outputs are labelled as legacy in
-the current talk and paper.
-
-## Legacy display-scaled characterization study
-
-The next study separates photon-detection loss from finite-cell recovery loss
-and adds the prompt-flash saturation curve commonly used to characterize a
-digital photon-counting array:
-
-```bash
-/opt/homebrew/bin/python3.13 studyDsipmCharacterization.py
-```
-
-The full run uses both 5,000-event samples and scans constant PDE from 10% to
-100%, labelled pitch from 10 to 50 um, and recovery times of 1, 4.3, and 40 ns.
-Every PDE point uses the same random number for a given photon, making the scan
-a paired comparison. Confidence intervals resample complete Geant4 events.
-The HG-DREAM part of this script retains `coordinate_scale=3` and is superseded
-for physical design work by `studyFlashV2.py`. Its prompt-flash transfer test
-remains an independent analytic validation.
-
-Two response fractions are reported and should not be conflated:
-
-- `accepted / incident` is the usable photon yield and includes PDE loss;
-- `accepted / detected` is recovery survival after the PDE selection.
-
-The archived 25 um values from this script describe the display-scaled
-reproduction, whose effective physical pitch is about 8.3 um. Do not compare
-them directly with a 25 um fabricated device.
-
-The study also simulates a simultaneous, spatially uniform flash on arrays of
-1,024, 4,096, and 16,384 cells and compares it with the exact finite-cell
-expectation
-
-```text
-M * (1 - (1 - 1/M)^N).
-```
-
-The Monte Carlo agrees with the analytic response within 1.84 statistical
-standard deviations over the tested grid.  The ideal prompt response reaches
-5% and 10% nonlinearity at approximately 0.103 and 0.215 incident photons per
-cell, respectively.  These thresholds are a transfer-function validation,
-not an HG-DREAM event prediction.
-
-Results are written under `results/dsipm-characterization-2026-validated/`:
-
-- `pde_pitch_recovery_scan.csv` contains all 420 HG-DREAM scan points and
-  event-bootstrap intervals;
-- `pde_tradeoff_25um.png` separates usable yield from recovery survival;
-- `pion_pde_pitch_recovery_maps.png` gives the two-dimensional design map;
-- `standard_prompt_flash_linearity.csv/.png` validate the finite-cell
-  saturation transfer function;
-- `unity_pde_historical_closure.json` proves exact numerical closure to all 42
-  overlapping points in the previously validated unity-PDE scan;
-- `run_manifest.json` records all inputs, seeds, selections, and limitations.
-
-## Physical sensor requirement study (current)
-
-The current study keeps photon coordinates in physical millimeters, uses a
-centered 3 x 3 mm sensor, audits every input cut, and scans PDE, pitch, and
-recovery on all 5,000 events per sample:
-
-```bash
-/opt/homebrew/bin/python3.13 studyFlashV2.py \
-  --bootstrap-samples 400 \
-  --output results/flash-study-v2-final
-```
-
-For the 1 TeV pion stress sample at 20% PDE and 4.3 ns recovery, 10, 20, and
-25 um cells retain 97.93%, 92.73%, and 89.50% of detected photons. Their usable
-fractions of incident photons are 19.64%, 18.59%, and 17.95%. The 10th-percentile
-event retains only 96.7%, 90.3%, and 86.2%, respectively.
-
-The study also writes:
-
-- the legacy-versus-physical mapping comparison;
-- the PDE-by-pitch-by-recovery requirement curves with event bootstrap bands;
-- event-level bright-tail distributions;
-- a physical pulse-shape distortion plot in 50 ps bins;
-- a train/test longitudinal timing proxy with paired bootstrap differences;
-- machine-readable cutflow, event, timing, pulse, and run-manifest files.
-
-The timing proxy has a 236 mm ideal test RMSE and long residual tails. Adding
-50 ps response smearing plus 50 ps TDC quantization changes the RMSE by less
-than 0.1 mm. This establishes that the simple many-photon quantile does not yet
-set a 10--50 ps device requirement.
-
-## CPAD 2026 talk draft
-
-`cpad2026/CPAD2026_FLASH_draft.tex` is a 16:9 Beamer draft that motivates
-HG-DREAM, summarizes the public dSiPM landscape, shows the coordinate audit,
-and presents the corrected physical requirement, event-tail, pulse-shape, and
-timing-proxy results. The source is a reviewable blueprint for the final
-Keynote deck.
-
-The summary separates photon loss from PDE and photon loss from recovery.  This
-is essential when comparing a fine-pitch device with low or unknown blue PDE
-against a coarser device with a different fill factor.
-
-### Audience-facing photon images and arrival profiles
-
-The CPAD draft also uses a matched pair of spatial and temporal views of the
-same two DREAMSim samples:
-
-```bash
-/opt/homebrew/bin/python3.13 makeCpadAudiencePlots.py
-```
-
-This writes a shared-scale x-y photon image and 50 ps-binned arrival profiles
-for 1 ns, 4.3 ns, and full-event holdoff under
-`results/cpad2026-audience/`.  The time curves are photon-arrival
-distributions after the idealized SPAD response; they are not analog voltage
-waveforms.  The ROOT histograms and a JSON summary are saved alongside the
-slide-ready PNG/PDF files.
-
-### CPAD validation suite
-
-The validation plots make the chain from optical photons to sparse digital
-hits explicit:
-
-```bash
-/opt/homebrew/bin/python3.13 makeCpadValidationPlots.py
-```
-
-The output under `results/cpad2026-validation/` includes an objectively chosen
-event-level occupancy example, optical propagation and production-depth timing,
-event-to-event photon/loss distributions, and numerical closure between the
-historical one-hit scan and the new 40 ns recovery implementation.  The plots
-also state the important caveat that 100 GeV positrons and 1 TeV pions are two
-stress samples, not a controlled same-energy particle comparison.
-
-### SPAD-pitch and readout-channel architecture scan
-
-`studyChannelArchitecture.py` separates the physical SPAD cell from the
-electronics channel shared by several cells.  It scans 5--50 um effective
-SPAD pitch and 1 x 1 through 64 x 64 SPAD readout groups, including the 6 x 6
-grouping used by the published DIGILOG topology:
-
-```bash
-/opt/homebrew/bin/python3.13 studyChannelArchitecture.py \
-  --output results/channel-architecture-v2
-```
-
-The comparison holds PDE (20%), individual-SPAD recovery (4.3 ns), channel
-resolving time (50 ps), timestamp depth (eight), and counter depth (eight
-bits) fixed.  This isolates the coupled effects of cell pitch and channel
-sharing; it is an architecture stress test rather than a frozen FLASH
-specification.  The count path and timestamp path are reported separately.
-
-The output includes the full two-dimensional scan, CMS-style timing/overflow/
-payload plots, and two decision tables. `architecture_working_points.csv`
-selects the lowest-payload point at each pitch that retains at least 95% of
-timestamps, limits events with any timing-buffer overflow to 5%, and retains
-at least 99% of counts. `common_resource_topology_projections.csv` evaluates
-illustrative FLASH, Litavis, DIGILOG, and ASPIDES groupings under the same
-electronics assumptions.  Those rows compare topology only and are not
-predictions of each device's native readout policy.
-
-On the 5,000-event 1 TeV pion stress sample, the passing points select a
-nominal readout-channel side between 50 and 100 um over the 5--50 um SPAD
-pitch scan.  An illustrative 20 um, 4 x 4 point retains 96.10% of timestamps,
-has at least one timing-buffer overflow in 1.42% of events, and exports 1.617
-kbit/event on average.  A 50 um, 6 x 6 grouping retains 75.17% of timestamps
-under the same all-hit, eight-word-buffer assumption.  The latter is not a
-DIGILOG performance prediction because DIGILOG uses a different timing-output
-policy; it demonstrates why topology and output policy must be compared
-separately.
-
-### Active-area fill factor and spectral response
-
-`studyFillFactorSpectral.py` separates physical pitch from the photosensitive
-area inside each cell and uses the stored photon wavelength instead of a
-single effective PDE:
-
-```bash
-/opt/homebrew/bin/python3.13 studyFillFactorSpectral.py \
-  --output results/fill-factor-spectral-v1
-```
-
-The study scans 5--50 um pitch and 30--100% nominal square active area. A
-normalized version of the capstone wavelength polynomial supplies a traceable
-spectral shape with a 30% peak junction-detection probability. The four
-reported stages are geometric acceptance, junction detection, physical-SPAD
-recovery, and shared-channel timestamp retention.
-
-For the 1 TeV pion stress sample at 20 um pitch and 70% nominal fill factor,
-69.99% of photons land on the active-area proxy, the effective detected
-fraction is 18.74%, recovery retains 93.06% of detected photons, and an
-approximately 80 um timing channel retains 96.30% of accepted avalanches. The
-end-to-end yield is 16.79 timestamp records per 100 incident photons.
-
-The active square and normalized spectral curve are explicit study proxies.
-They do not include guard rings, microlenses, optical coupling, incidence
-angle, wavelength-dependent timing response, or a measured FLASH PDE curve.
-
-## Tests
-
-The detector logic does not depend on ROOT and has unit tests for the capstone
-PDE curve, full-event dead time, finite recovery, common random numbers,
-first/last timing, geometry, and catalog integrity:
-
-```bash
-/opt/homebrew/bin/python3.13 -m unittest discover -s tests -v
-```
-
-## Historical scripts
-
-- `oldCode/simDigitalSiPM.py`: early 1 mm occupancy study.
-- `simSPADs.py`: later multi-dimensional occupancy maps.  It currently has a
-  deliberate two-event stop and one active 10 um pitch.
-- `makeInputData.py`: untracked local full-plane geometry histogram producer.
-- `makeProjections.py`: ROOT projections and efficiency plots.  Its plotting
-  representation replaces exact zero efficiency with 0.001 for log display.
-- `ToySim/simDigitalSiPM.py`: synthetic nine-fiber toy model.
-
-These files have not been rewritten so past work remains inspectable.  Shared
-pieces from the student repository—wavelength reconstruction, the QE
-polynomial, time ordering, and geometry options—were moved into the tested
-`dsipm/` package and made deterministic.  The source review used student-repo
-commit `80810a7e18eb7e1946436d47c49007310708f5e5`.
+This uses one fixed zero-jitter calibration, not retraining at each resolution.
+`--draws` adds matched noise repetitions; they are not independent showers.
+`--leave-rod-out` tests within-rod correlations. `--fixed-n-eff VALUE` adds an
+explicitly frozen fixed-path baseline. No existing output is overwritten.
+
+Scoring retains failures in the accepted-photon denominator, reports conditional
+bias/68% width and inclusive fractions within 5/10/20 cm, and uses event-block
+bootstrap intervals with depth-bin underflow/overflow accounting. Gate/PDE/
+holdoff losses are separate. Channel medians are accepted-photon truth medians,
+not energy-deposition truth. Local timing-only z-error contributions exclude
+path/emission ambiguity and are not total calibrated uncertainty intervals.
+
+## Comparison models and scope
+
+The core retains 19-DREAM-PMT / 448-HG-DREAM-C-channel transverse projections,
+independent-fiber FLASH response, the conventional-SiPM partial-recharge proxy,
+shared-channel resource counting and explicit electronics-display convolution.
+The unchanged layout-projection APIs use their documented rod-centred reference
+frame. They are not a separate DREAM detector simulation or a model of actual
+HG-DREAM shared optical transport. Corrected raw localization uses the physical
+calorimeter frame separately; do not mix the two coordinate conventions.
+
+Accepted-SPAD timestamps/positions are an optimistic observation model, NOT
+actual FLASH exported records. Shared-channel count/timestamp resource proxies
+are separate explicit calls, not automatically applied to reconstruction. A
+convolved waveform proxy is not measured voltage or a dSiPM analog waveform.
+Historical seeded comparison APIs retain their RNG convention; matched depth
+observations use the newer keyed convention. Neither is silently relabelled.
+
+The unresolved production optical-transport issue and exact photon-birth timing
+remain physics-validation gates. Saved first-step time is not exact birth time;
+exit momentum may include end refraction and is not in-core path truth. Learning
+from delayed output cannot certify the bug away. No detector timing resolution,
+explicit scintillation, all-fiber optical response or prototype performance is
+claimed. The production scope remains central-window Cherenkov.
+
+## Preservation and checks
+
+The full pre-cleanup tree, including all paper/talk sources, study drivers,
+plotters, provenance notes and production tooling, is preserved at
+[`cpad2026-complete-before-cleanup-20261021`](https://github.com/TTU-HEP/dSiPM/tree/cpad2026-complete-before-cleanup-20261021)
+(commit `bfac679`). Nothing was force-pushed or removed from Git history.
+HPCC checkouts/checkpoints and local paper/figure products are untouched.
+Those historical rebuilds should run from that frozen version, not this core.
+
+This cleanup moves computational definitions rather than rederiving the physics.
+All current depth-regression cases and the relevant comparison/pulse/readout
+tests remain. A frozen before/after numerical comparison checks sensor masks,
+charges, layouts, noise, calibration hashes, all reconstruction methods and their
+evaluation metrics. Software closure is not a new physics-performance result.
+The cleanup passes 48 focused tests, retaining all 35 current depth regressions;
+165 frozen arrays/serialized metric records match the pre-cleanup version exactly.
+
+Import migration: `depth_reconstruction` and `depth_evaluation` -> `depth`;
+`depth_geometry` and `fiber_transport` -> `geometry`; `depth_observations`,
+sensor response and `pulse_shape` -> `sensors`; `depth_io` -> `io`.
+Device catalog/legacy plotting/rebuild/production workflows remain in the archive,
+not hidden behind compatibility wrappers in the new core.
