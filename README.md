@@ -121,6 +121,37 @@ holdoff losses are separate. Channel medians are accepted-photon truth medians,
 not energy-deposition truth. Local timing-only z-error contributions exclude
 path/emission ambiguity and are not total calibrated uncertainty intervals.
 
+Every evaluated scan also saves a true-Z/reconstructed-Z response matrix with
+explicit failure counts in each truth bin. True Z is horizontal, reconstructed
+Z vertical. Response-column normalization retains unreconstructed inputs.
+Optional plotting checks the cache/result hashes and original photon identities
+before writing individual square plots for response, residual versus truth,
+and inclusive success/failure versus truth (one PDF and PNG per plot):
+
+```bash
+python -m pip install matplotlib  # optional, not needed by the NumPy core
+python studyDepthReconstruction.py plot --input heldout_cache --run results/depth-scan \
+  --output results/depth-plots --method neighbour --sigma-ps 50 --label "pi+ 100 GeV"
+```
+
+Keep particle and energy samples separate. A plot of reconstructed versus true
+photon-production depth is the primary depth deliverable; arrival time versus
+truth is only a transport diagnostic. Neither establishes energy-deposition
+resolution or cures the unresolved optical-transport issue.
+
+`reduceDepthCampaign.py` is the Slurm-only existing-ROOT baseline driver for the
+complete pinned 40,000-event campaign. It evaluates **every accepted individual
+photon**, not selected channels or first hits. It preserves the same photons and
+noise draws across timing assumptions, records out-of-window photons separately,
+and closes incident = undetected + holdoff loss + accepted. Physical inversions
+and failures sum to all scored photons; residual histograms must also close.
+Per-source immutable products permit file-block uncertainties without exporting
+raw photons. The unfitted axial baseline scores all events; the historical fixed
+index baseline excludes its original 20 calibration events from scores only.
+Neither baseline is a trained path model or a certified final detector result.
+The plan pins the combined manifest, code hashes, reference table, timing scan,
+optics and calibration exclusions; use a new output directory for every new plan.
+
 ## Comparison models and scope
 
 The core retains 19-DREAM-PMT / 448-HG-DREAM-C-channel transverse projections,

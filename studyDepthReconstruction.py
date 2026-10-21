@@ -14,7 +14,7 @@ import numpy as np
 from dsipm.io import load_cache, file_sha256
 from dsipm.depth import Calibration, fit_calibration, reconstruct
 from dsipm.sensors import smear_observations
-from dsipm.depth import evaluate
+from dsipm.depth import evaluate, response_matrix
 
 
 def calibrate(args):
@@ -86,6 +86,108 @@ def scan(args):
     print(f"Saved {len(manifest['results'])} matched reconstructions in {target}")
 
 
+def render_response(product, target, *, label):
+    """Optional scientific plotting; one labeled PDF/PNG per observable."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm, LinearSegmentedColormap
+
+    counts = np.asarray(product["counts"], float)
+    inputs = np.asarray(product["input_by_truth"], float)
+    failed = np.asarray(product["unreconstructed_by_truth"], float)
+    edges = np.asarray(product["truth_edges_mm"])/10
+    reco_edges = np.asarray(product["reco_edges_mm"])/10
+    if not np.array_equal(counts.sum(axis=1)+failed, inputs):
+        raise ValueError("Response plot closure failure")
+    target = Path(target)
+    target.mkdir(parents=True, exist_ok=False)
+    plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"],
+        "axes.labelweight": "bold", "axes.labelsize": 14, "font.size": 12,
+        "xtick.direction": "in", "ytick.direction": "in", "xtick.top": True, "ytick.right": True,
+        "pdf.fonttype": 42, "axes.linewidth": 1.3})
+    cmap = LinearSegmentedColormap.from_list("bird", ["#352a87", "#1062dc", "#108cd2", "#17acb9", "#60bc8b", "#babc62", "#f7c638", "#f9f90f"])
+    cmap.set_bad("white")
+    def axes(colorbar=False):
+        fig = plt.figure(figsize=(6.9, 6.6))
+        ax = fig.add_axes([.16, .15, .68 if colorbar else .77, .72])
+        ax.set_box_aspect(1); ax.minorticks_on()
+        ax.text(0, 1.04, "FLASH", transform=ax.transAxes, weight="bold", fontsize=15)
+        ax.text(.22, 1.04, "Simulation Preliminary", transform=ax.transAxes, style="italic", fontsize=12)
+        ax.text(.97, .97, label, transform=ax.transAxes, ha="right", va="top", fontsize=9,
+                bbox=dict(facecolor="white", alpha=.9, edgecolor="none", pad=2))
+        ax.set_xlim(edges[0], edges[-1]); ax.set_xlabel("True photon-production Z [cm]")
+        return fig, ax
+    outputs = []
+    def save(fig, name):
+        for ext in ("pdf", "png"):
+            path = target/(name+"."+ext)
+            fig.savefig(path, dpi=220, facecolor="white")
+            outputs.append(dict(file=path.name, sha256=file_sha256(path)))
+        plt.close(fig)
+    fig, ax = axes(True)
+    probability = np.divide(100*counts, inputs[:, None], out=np.zeros_like(counts), where=inputs[:, None]>0)
+    image = ax.pcolormesh(edges, reco_edges, np.ma.masked_equal(probability.T, 0), cmap=cmap,
+                         norm=LogNorm(vmin=.01, vmax=100), shading="flat", rasterized=True)
+    ax.plot([edges[0], edges[-1]], [edges[0], edges[-1]], "--", color="#ce007a", lw=1.5, label="Perfect reconstruction")
+    ax.set_ylim(reco_edges[0], reco_edges[-1]); ax.set_ylabel("Reconstructed Z [cm]")
+    ax.legend(loc="lower right", fontsize=9)
+    fig.colorbar(image, ax=ax, fraction=.045, pad=.02).set_label("Input fraction per true-Z bin [% / reco bin]", weight="bold", fontsize=11)
+    save(fig, "truth_vs_reconstructed")
+    centers = (edges[:-1]+edges[1:])/2
+    q = np.asarray(product["conditional_residual_q16_q50_q84_mm"], float)/10
+    fig, ax = axes()
+    ax.axhline(0, color="#ce007a", ls="--", lw=1.3)
+    ax.fill_between(centers, q[:, 0], q[:, 2], color="#1676ad", alpha=.2, label="Central 68%, physical returns")
+    ax.plot(centers, q[:, 1], color="#1676ad", lw=1.6, label=product.get("median_label", "Median residual"))
+    ax.set_ylabel(product.get("residual_ylabel", "Reconstructed Z - true Z [cm]")); ax.legend(loc="lower left", fontsize=9)
+    save(fig, "residual_vs_truth")
+    fig, ax = axes()
+    ax.plot(centers, np.divide(100*failed, inputs, out=np.full_like(inputs, np.nan), where=inputs>0),
+            color="#ce007a", label="Unreconstructed")
+    if product.get("within100mm_by_truth") is not None:
+        within = np.asarray(product["within100mm_by_truth"], float)
+        ax.plot(centers, np.divide(100*within, inputs, out=np.full_like(inputs, np.nan), where=inputs>0),
+                color="#1676ad", label="Within 10 cm, all inputs")
+    ax.set_ylim(0, 100); ax.set_ylabel("Fraction of all input [%]"); ax.legend(loc="lower right", fontsize=9)
+    save(fig, "success_and_failure_vs_truth")
+    with (target/"plot_manifest.json").open("x") as f:
+        json.dump(dict(label=label, product=product, files=outputs,
+            scope="development response, not certified detector performance"), f, indent=2, allow_nan=False)
+
+
+def plot(args):
+    obs, contract, truth, meta = load_cache(args.input)
+    if "truth_z_mm" not in truth:
+        raise ValueError("Truth-versus-reconstruction plot requires an explicitly aligned true-Z cache")
+    run = Path(args.scan_dir)
+    summary = json.loads((run/"summary.json").read_text())
+    if summary["source_cache"] != meta:
+        raise ValueError("Plot cache does not match the recorded scan input")
+    records = [r for r in summary["results"] if
+        (args.method is None or r["options"]["method"] == args.method) and
+        (args.sigma_ps is None or r["options"]["sigma_t_ns"] == args.sigma_ps/1000)]
+    if not records:
+        raise ValueError("No matching reconstruction results")
+    products = []
+    for row in records:
+        if Path(row["name"]).name != row["name"]:
+            raise ValueError("Unsafe reconstruction result name")
+        path = run/(row["name"]+".npz")
+        if path.parent != run or file_sha256(path) != row["sha256"]:
+            raise ValueError("Reconstruction result path/hash mismatch")
+        with np.load(path, allow_pickle=False) as f:
+            if not np.array_equal(f["event_key"], obs.event_key) or not np.array_equal(f["photon_id"], obs.photon_id):
+                raise ValueError("Reconstruction photon identity/alignment mismatch")
+            if not np.array_equal(f["status"] == 2, ~np.isfinite(f["z_mm"])):
+                raise ValueError("Reconstruction failure status mismatch")
+            products.append((row["name"], response_matrix(truth["truth_z_mm"], f["z_mm"], length_mm=contract.length_mm)))
+    target = Path(args.output); target.mkdir(parents=True, exist_ok=False)
+    for name, product in products:
+        render_response(product, target/name, label=args.label+"\n"+name)
+    print(f"Saved {len(products)} truth/reconstruction response sets in {target}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -105,6 +207,11 @@ def main():
     run.add_argument("--leave-rod-out", action="store_true")
     run.add_argument("--fixed-n-eff", type=float, help="Optional frozen historical fixed-path baseline, not refit to test data")
     run.set_defaults(run=scan)
+    plots = sub.add_parser("plot", help="True-Z/reconstructed-Z, residual and inclusive failure plots; optional matplotlib")
+    plots.add_argument("--input", required=True); plots.add_argument("--run", dest="scan_dir", required=True)
+    plots.add_argument("--output", required=True); plots.add_argument("--label", required=True)
+    plots.add_argument("--method", choices=["fixed", "radius", "radius_delay", "neighbour"])
+    plots.add_argument("--sigma-ps", type=float); plots.set_defaults(run=plot)
     args = ap.parse_args(); args.run(args)
 
 

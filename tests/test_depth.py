@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 import numpy as np
 from dsipm.depth import (C_MM_NS, Calibration, DepthContract, DepthStatus, PhotonObservations,
-                        channel_delay, fit_calibration, reconstruct, evaluate, residual_summary)
+                        channel_delay, fit_calibration, reconstruct, evaluate, residual_summary, response_matrix)
 from dsipm.sensors import make_observations, smear_observations
 from dsipm.geometry import (FIBER_OFFSETS_MM, dreamsim_front_contract, localize_endpoints,
                            rotation, world_to_calorimeter, RayStatus, trace_cylinder)
@@ -188,6 +188,119 @@ class DepthReconstructionTests(unittest.TestCase):
         self.assertEqual(a, b); self.assertTrue(a["closure"])
         self.assertEqual(a["truth_underflow"], 1); self.assertEqual(a["truth_overflow"], 1)
         self.assertEqual(a["event_block_bootstrap"]["draws"], 25)
+
+
+class DepthResponseTests(unittest.TestCase):
+    def test_orientation_endpoints_and_failure_denominators(self):
+        r = response_matrix([0., 100., 500., 2000.], [2000., np.nan, 500., 0.], bins=4)
+        h = np.array(r["counts"])
+        self.assertEqual(h[0, 3], 1)  # true on x, reco on y; never transposed
+        self.assertEqual(h[3, 0], 1)
+        self.assertEqual(r["input_by_truth"], [2, 1, 0, 1])
+        self.assertEqual(r["unreconstructed_by_truth"], [1, 0, 0, 0])
+        self.assertEqual(r["within100mm_by_truth"], [0, 1, 0, 0])
+        np.testing.assert_equal(h.sum(axis=1)+r["unreconstructed_by_truth"], r["input_by_truth"])
+
+    def test_empty_and_conditional_quantiles(self):
+        self.assertEqual(response_matrix([], [], bins=2)["input"], 0)
+        r = response_matrix([100., 200., 300.], [110., 230., np.nan], bins=2)
+        self.assertEqual(r["conditional_residual_q16_q50_q84_mm"][0][1], 20.)
+        self.assertEqual(r["input_by_truth"][0], 3)
+        self.assertEqual(r["unreconstructed_by_truth"][0], 1)
+
+    def test_out_of_detector_response_cannot_be_silently_dropped(self):
+        for truth, z in [([500.], [-1.]), ([500.], [2001.]), ([-1.], [np.nan]), ([2001.], [5.])]:
+            with self.assertRaisesRegex(ValueError, "physical"):
+                response_matrix(truth, z)
+        for bins in [1, 1.5, True]:
+            with self.assertRaises(ValueError): response_matrix([10.], [20.], bins=bins)
+
+
+class AllPhotonCampaignTests(unittest.TestCase):
+    def test_all_inputs_include_nonphysical_and_nonfinite_failures(self):
+        from reduceDepthCampaign import make_histograms, accumulate
+        plan = dict(z_edges_mm=[0.,500.,1000.,2000.], residual_edges_mm=[-2000.,0.,2000.],
+                    baselines=[dict(name='axial',n_eff=1.49)], sigmas_ps=[0.,50.])
+        a = make_histograms(plan)
+        r = accumulate(a,0,0,[0.,500.,2000.,1000.],[np.nan,500.,3000.,np.inf],
+                       plan['z_edges_mm'],plan['residual_edges_mm'])
+        self.assertEqual(r,dict(input=4,reconstructed=1,failed=3,within100mm=1))
+        np.testing.assert_array_equal(a['response'][0,0].sum(axis=1)+a['failures'][0,0],a['denominator'][0,0])
+        self.assertEqual(a['response'][0,0,1,1],1)
+        accumulate(a,0,0,[0.,2000.],[2000.,0.],plan['z_edges_mm'],plan['residual_edges_mm'])
+        self.assertEqual(a['residual'].sum(),3)  # both residual endpoints retained
+        self.assertEqual(a['depth_residual'].sum(),3)
+        self.assertEqual(a['denominator'].sum(),6)
+        self.assertEqual(a['within'][0,0,:,1].sum(),1)
+        self.assertEqual(a['denominator'][0,1].sum(),0)
+        with self.assertRaisesRegex(ValueError,'Misaligned'):
+            accumulate(a,0,0,[0.,100.],[0.],plan['z_edges_mm'],plan['residual_edges_mm'])
+        with self.assertRaisesRegex(ValueError,'Invalid true'):
+            accumulate(a,0,0,[-1.],[0.],plan['z_edges_mm'],plan['residual_edges_mm'])
+
+    def test_plan_cannot_hide_histogram_overflows(self):
+        from reduceDepthCampaign import make_histograms
+        good = dict(z_edges_mm=[0.,1000.,2000.],residual_edges_mm=[-2000.,0.,2000.],
+                    baselines=[dict(name='axial',n_eff=1.49)],sigmas_ps=[0.,50.])
+        for bad in [dict(z_edges_mm=[0.,1000.,1999.]),dict(residual_edges_mm=[-1000.,0.,2000.]),
+                    dict(sigmas_ps=[0.,0.]),dict(sigmas_ps=[-1.]),dict(z_edges_mm=[0.,2000.,1000.])]:
+            with self.assertRaises(ValueError): make_histograms(dict(good,**bad))
+
+    def test_campaign_requires_slurm_before_reading(self):
+        from unittest.mock import patch
+        import reduceDepthCampaign
+        with patch.dict('os.environ',{},clear=True):
+            with self.assertRaisesRegex(RuntimeError,'Slurm'): reduceDepthCampaign.main()
+
+    def test_complete_synthetic_event_accounts_for_gate_and_calibration(self):
+        from unittest.mock import patch
+        import csv
+        import gzip
+        from dsipm.io import file_sha256
+        from dsipm.sensors import digitize_full_detector_event, FullDetectorScenario
+        from reduceDepthCampaign import reduce_one
+        raw = event()
+        raw.time_ns[:2] = [-1.,45.]  # reader retains these; sensor window does not
+        order = np.flatnonzero((raw.time_ns>0)&(raw.time_ns<40))
+        order = order[np.argsort(raw.time_ns[order],kind='stable')]
+        e = SimpleNamespace(**{k:v[order] for k,v in vars(raw).items()},event_index=0)
+        ref = DepthContract.from_workflow()
+        digit = digitize_full_detector_event(e,FullDetectorScenario(ref.pde,ref.pitch_um,ref.recovery_ns))
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root/'fixture.root'
+            side = Path(str(source)+'.validation.json')
+            side.write_text(json.dumps(dict(status='valid',entries=1)))
+            row = dict(root_file=str(source),sidecar_sha256=file_sha256(side),root_sha256='a'*64,
+                       sample='fixture',events=1,offset=0)
+            table = root/'reference/reductions/fixture/fixture.events.csv.gz'
+            table.parent.mkdir(parents=True)
+            with gzip.open(table,'wt') as f:
+                writer = csv.DictWriter(f,fieldnames=['source_entry','selected_cherenkov_photons','detected_reference','accepted_reference'])
+                writer.writeheader(); writer.writerow(dict(source_entry=0,selected_cherenkov_photons=len(order),
+                    detected_reference=digit.n_detected,accepted_reference=digit.n_accepted))
+            (table.parent/'release_validation.json').write_text(json.dumps(dict(input=row,events_sha256=file_sha256(table))))
+            plan = dict(_sha256='b'*64,code_revision='fixture',production_pins={},reference_release=str(root/'reference'),
+                z_edges_mm=[0.,1000.,2000.],residual_edges_mm=[-2000.,0.,2000.],sigmas_ps=[0,50],
+                baselines=[dict(name='axial',n_eff=1.49),dict(name='historical_fixed',n_eff=1.553)],
+                entrance_sigma_ps=0,noise_seed=20261021,old_calibration_root_sha256='a'*64,old_calibration_event_indices=[0])
+            truth = dict(truth_z_mm=np.linspace(0.,2000.,len(raw.time_ns)))
+            yielded = [('a'*64+':0',(raw,np.arange(len(raw.time_ns)),truth,dict(raw=703,rejected=3)))]
+            with patch.dict('os.environ',SLURM_JOB_ID='fixture'),patch('reduceDepthCampaign.iter_corrected_root',return_value=iter(yielded)) as read:
+                report = reduce_one(row,plan,root/'output')
+            self.assertEqual(read.call_args.args[2].gate_ns,(-1e300,1e300))
+            r = report['records'][0]
+            self.assertEqual(r['raw'],703); self.assertEqual(r['geometric_downstream'],700)
+            self.assertEqual(r['outside_sensor_window'],2)
+            self.assertEqual(r['incident_in_window'],r['not_detected']+r['lost_holdoff']+r['accepted'])
+            self.assertTrue(r['baselines']['historical_fixed_50ps']['calibration_entry'])
+            with np.load(root/'output/results/fixture/histograms.npz') as h:
+                self.assertEqual(h['denominator'][0,0].sum(),digit.n_accepted)
+                self.assertEqual(h['denominator'][0,1].sum(),digit.n_accepted)
+                self.assertEqual(h['denominator'][1].sum(),0)
+                np.testing.assert_array_equal(h['stage_truth'].sum(axis=1),[700,2,698,698-digit.n_detected,digit.n_detected-digit.n_accepted,digit.n_accepted])
+            self.assertEqual(reduce_one(row,plan,root/'output'),report)
+            (root/'output/results/fixture/histograms.npz').write_bytes(b'corrupt')
+            with self.assertRaisesRegex(ValueError,'checksum'): reduce_one(row,plan,root/'output')
 
 
 class DepthSensorTests(unittest.TestCase):
@@ -369,10 +482,62 @@ class DepthPipelineTests(unittest.TestCase):
             for r in report["results"]:
                 self.assertTrue(r["evaluation"]["closure"])
                 self.assertEqual(r["evaluation"]["input"], len(zb))
+                matrix = r["evaluation"]["response"]
+                self.assertTrue(matrix["closure"])
+                self.assertEqual(matrix["input"], len(zb))
                 with np.load(d/"scan"/(r["name"]+".npz"), allow_pickle=False) as f:
                     np.testing.assert_equal(f["photon_id"], b.photon_id)
                     np.testing.assert_equal(f["event_key"], b.event_key)
             self.assertNotEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
+
+    def test_plot_rejects_cache_and_result_mismatches(self):
+        from dsipm.io import file_sha256
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            a, c, z, _ = fixture("eval", events=2, n=8)
+            save_cache(d/"cache", a, c, provenance={"timestamp_sigma_ns": 0}, truth_z_mm=z)
+            _, _, _, meta = load_cache(d/"cache")
+            (d/"run").mkdir()
+            record = d/"run/radius_50ps_draw0.npz"
+            np.savez_compressed(record, event_key=a.event_key, photon_id=a.photon_id, z_mm=z, status=np.zeros(len(z),int))
+            row = dict(name=record.stem, sha256=file_sha256(record), options=dict(method="radius",sigma_t_ns=.05))
+            summary = dict(source_cache=meta, results=[row])
+            cmd = [sys.executable,str(REPO/"studyDepthReconstruction.py"),"plot","--input",str(d/"cache"),
+                   "--run",str(d/"run"),"--output",str(d/"plots"),"--label","synthetic test"]
+            summary["source_cache"] = dict(meta, events=["wrong"])
+            (d/"run/summary.json").write_text(json.dumps(summary))
+            self.assertIn("does not match",subprocess.run(cmd,capture_output=True,text=True).stderr)
+            summary["source_cache"] = meta
+            row["sha256"] = "0"*64
+            (d/"run/summary.json").write_text(json.dumps(summary))
+            self.assertIn("hash mismatch",subprocess.run(cmd,capture_output=True,text=True).stderr)
+            np.savez_compressed(record, event_key=a.event_key, photon_id=a.photon_id[::-1], z_mm=z, status=np.zeros(len(z),int))
+            row["sha256"] = file_sha256(record)
+            (d/"run/summary.json").write_text(json.dumps(summary))
+            self.assertIn("alignment",subprocess.run(cmd,capture_output=True,text=True).stderr)
+            self.assertFalse((d/"plots").exists())
+
+    def test_plot_cli_writes_three_individual_figures(self):
+        import importlib.util
+        if importlib.util.find_spec("matplotlib") is None:
+            self.skipTest("Optional matplotlib not installed")
+        from dsipm.io import file_sha256
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            a, c, z, _ = fixture("eval",events=2,n=8)
+            save_cache(d/"cache",a,c,provenance={"timestamp_sigma_ns":0},truth_z_mm=z)
+            _, _, _, meta = load_cache(d/"cache")
+            (d/"run").mkdir()
+            result=d/"run/radius_50ps_draw0.npz"
+            np.savez_compressed(result,event_key=a.event_key,photon_id=a.photon_id,z_mm=z,status=np.zeros(len(z),int))
+            (d/"run/summary.json").write_text(json.dumps(dict(source_cache=meta,results=[dict(name=result.stem,
+                sha256=file_sha256(result),options=dict(method="radius",sigma_t_ns=.05))])))
+            cmd=[sys.executable,str(REPO/"studyDepthReconstruction.py"),"plot","--input",str(d/"cache"),
+                 "--run",str(d/"run"),"--output",str(d/"plots"),"--label","synthetic test","--sigma-ps","50"]
+            subprocess.run(cmd,check=True,capture_output=True,text=True)
+            self.assertEqual(len(list((d/"plots").rglob("*.pdf"))),3)
+            self.assertEqual(len(list((d/"plots").rglob("*.png"))),3)
+            self.assertNotEqual(subprocess.run(cmd,capture_output=True).returncode,0)
 
     def test_unvalidated_truth_cannot_be_trained_by_cli(self):
         with TemporaryDirectory() as d:

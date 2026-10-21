@@ -466,6 +466,40 @@ def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.
 
 # Truth-based evaluation. None of these truth arguments enter reconstruct().
 
+def response_matrix(truth_mm, reconstructed_mm, *, length_mm=2000., bins=40):
+    """True Z on x, reconstructed Z on y; retain failures in every denominator.
+
+    This evaluation product never enters inference. Residual quantiles condition
+    on physical returns; within-10-cm counts retain failures in the denominator.
+    The last bin includes the exact downstream endpoint.
+    """
+    truth, z = np.asarray(truth_mm, float), np.asarray(reconstructed_mm, float)
+    if (truth.ndim != 1 or z.shape != truth.shape or not np.isfinite(truth).all() or
+            not np.isfinite(length_mm) or length_mm <= 0 or
+            not isinstance(bins, (int, np.integer)) or isinstance(bins, bool) or bins < 2):
+        raise ValueError("Invalid response inputs/binning")
+    valid = np.isfinite(z)
+    if np.any((truth < 0) | (truth > length_mm)) or np.any(valid & ((z < 0) | (z > length_mm))):
+        raise ValueError("Response depths outside physical detector")
+    edges = np.linspace(0, length_mm, bins+1)
+    counts = np.histogram2d(truth[valid], z[valid], bins=(edges, edges))[0].astype(np.int64)
+    inputs = np.histogram(truth, edges)[0]
+    failed = np.histogram(truth[~valid], edges)[0]
+    good = np.histogram(truth[valid & (abs(z-truth) <= 100.)], edges)[0]
+    ids = np.minimum(np.searchsorted(edges, truth, side="right")-1, bins-1)
+    quantiles = []
+    for b in range(bins):
+        residual = z[valid & (ids == b)]-truth[valid & (ids == b)]
+        quantiles.append(np.percentile(residual, [16, 50, 84]).tolist() if len(residual) else [None]*3)
+    if not np.array_equal(counts.sum(axis=1)+failed, inputs):
+        raise ValueError("Truth/reconstruction response closure failure")
+    return dict(schema="z-response-v1", truth_edges_mm=edges.tolist(), reco_edges_mm=edges.tolist(),
+        counts=counts.tolist(), input_by_truth=inputs.tolist(), unreconstructed_by_truth=failed.tolist(),
+        within100mm_by_truth=good.tolist(), conditional_residual_q16_q50_q84_mm=quantiles,
+        input=len(truth), reconstructed=int(valid.sum()), unreconstructed=int((~valid).sum()),
+        normalization="all input per true-Z bin, including unreconstructed", closure=True)
+
+
 def residual_summary(truth_mm, reconstructed_mm, *, tolerances_mm=(50., 100., 200.)):
     truth, z = np.asarray(truth_mm, float), np.asarray(reconstructed_mm, float)
     if truth.ndim != 1 or z.shape != truth.shape or not np.isfinite(truth).all():
@@ -547,4 +581,5 @@ def evaluate(obs, truth_mm, result, contract, *, bootstrap_draws=200, seed=20261
     report["event_block_bootstrap"] = dict(draws=len(draws), seed=seed, percentile_95=intervals,
         unavailable_reason="need at least two independent events" if len(events) < 2 else None)
     report["closure"] = report["input"] == report["reconstructed"]+report["unreconstructed"]
+    report["response"] = response_matrix(truth, result.z_mm, length_mm=contract.length_mm)
     return report
