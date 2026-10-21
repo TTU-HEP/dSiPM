@@ -1,5 +1,17 @@
 # Digital SiPM studies for DREAM/FLASH
 
+## Timing-based depth reconstruction (development, October 2026)
+
+The new, separately versioned depth workflow is documented in
+[docs/DEPTH_RECONSTRUCTION.md](docs/DEPTH_RECONSTRUCTION.md). It integrates
+radius/delay calibration and neighbouring-light inference with corrected
+geometry, matched timestamp scans, explicit failures and event-block scoring.
+Start with `studyDepthReconstruction.py --help`; it does not generate events.
+Historical scripts, checkpoints and published plot inputs are unchanged.
+Software closure is **not** certification of the unresolved production optical
+transport or of detector depth resolution. The older rebuild/status statements
+below describe historical products, not validation of this new study.
+
 This repository contains the original dSiPM occupancy studies and a new,
 deterministic device-comparison workflow.  The new code is designed to do two
 jobs on the same DREAMSim optical-photon events:
