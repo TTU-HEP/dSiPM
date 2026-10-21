@@ -343,9 +343,10 @@ class AllPhotonCampaignTests(unittest.TestCase):
                 samples=samples,plan_sha256=file_sha256(path),optical_transport_validated=False,residual_quantile_bin_width_mm=2000)
             (root/'summary.json').write_text(json.dumps(summary))
             args=SimpleNamespace(input=str(root),plan=str(path),output=str(root/'plots'),sigma_ps=50,baseline='axial')
-            with patch('studyDepthReconstruction.render_response') as render:
+            with patch('studyDepthReconstruction.render_response') as render,patch('studyDepthReconstruction.render_resolution') as resolution:
                 plot_campaign(args)
             self.assertEqual(render.call_count,8)
+            self.assertEqual(resolution.call_count,8)
             self.assertEqual(render.call_args.args[0]['input_by_truth'],[2,1])
             self.assertEqual(len((root/'plots/all_resolution_results.csv').read_text().splitlines()),9)
             args.output=str(root/'must_not_exist')
@@ -354,6 +355,24 @@ class AllPhotonCampaignTests(unittest.TestCase):
             self.assertFalse(Path(args.output).exists())
             path.write_text('{}')
             with self.assertRaisesRegex(ValueError,'plan checksum'): plot_campaign(args)
+
+    def test_resolution_figure_uses_inclusive_rates_and_refuses_overwrite(self):
+        try:
+            import matplotlib
+        except ImportError:
+            self.skipTest('Optional matplotlib is not installed')
+        from studyDepthReconstruction import render_resolution
+        plan=dict(sigmas_ps=[0,50,200,500],baselines=[dict(name='axial'),dict(name='historical_fixed')])
+        cases={m['name']+'_'+str(s)+'ps':dict(within100mm_pct=30-s/100,
+            file_bootstrap_95=dict(within100mm_pct=[29-s/100,31-s/100]))
+            for m in plan['baselines'] for s in plan['sigmas_ps']}
+        with TemporaryDirectory() as tmp:
+            render_resolution(dict(cases=cases),plan,tmp,label='synthetic regression')
+            self.assertTrue((Path(tmp)/'accuracy_vs_resolution.pdf').is_file())
+            manifest=json.loads((Path(tmp)/'resolution_manifest.json').read_text())
+            self.assertIn('failed inversions',manifest['denominator'])
+            self.assertEqual(manifest['cases'],cases)
+            with self.assertRaises(FileExistsError): render_resolution(dict(cases=cases),plan,tmp,label='test')
 
 
 class DepthSensorTests(unittest.TestCase):

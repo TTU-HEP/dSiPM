@@ -86,10 +86,27 @@ def scan(args):
     print(f"Saved {len(manifest['results'])} matched reconstructions in {target}")
 
 
-def render_response(product, target, *, label):
-    """Optional scientific plotting; one labeled PDF/PNG per observable."""
+def _plot_axes(label, xlabel, xlim, *, colorbar=False):
     import matplotlib
     matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"],
+        "axes.labelweight": "bold", "axes.labelsize": 14, "font.size": 12,
+        "xtick.direction": "in", "ytick.direction": "in", "xtick.top": True, "ytick.right": True,
+        "pdf.fonttype": 42, "axes.linewidth": 1.3})
+    fig = plt.figure(figsize=(6.9, 6.6))
+    ax = fig.add_axes([.16, .15, .68 if colorbar else .77, .72])
+    ax.set_box_aspect(1); ax.minorticks_on()
+    ax.text(0, 1.04, "FLASH", transform=ax.transAxes, weight="bold", fontsize=15)
+    ax.text(.22, 1.04, "Simulation Preliminary", transform=ax.transAxes, style="italic", fontsize=12)
+    ax.text(.97, .97, label, transform=ax.transAxes, ha="right", va="top", fontsize=9,
+            bbox=dict(facecolor="white", alpha=.9, edgecolor="none", pad=2))
+    ax.set_xlim(*xlim); ax.set_xlabel(xlabel)
+    return fig, ax
+
+
+def render_response(product, target, *, label):
+    """Optional scientific plotting; one labeled PDF/PNG per observable."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm, LinearSegmentedColormap
 
@@ -102,22 +119,10 @@ def render_response(product, target, *, label):
         raise ValueError("Response plot closure failure")
     target = Path(target)
     target.mkdir(parents=True, exist_ok=False)
-    plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"],
-        "axes.labelweight": "bold", "axes.labelsize": 14, "font.size": 12,
-        "xtick.direction": "in", "ytick.direction": "in", "xtick.top": True, "ytick.right": True,
-        "pdf.fonttype": 42, "axes.linewidth": 1.3})
     cmap = LinearSegmentedColormap.from_list("bird", ["#352a87", "#1062dc", "#108cd2", "#17acb9", "#60bc8b", "#babc62", "#f7c638", "#f9f90f"])
     cmap.set_bad("white")
     def axes(colorbar=False):
-        fig = plt.figure(figsize=(6.9, 6.6))
-        ax = fig.add_axes([.16, .15, .68 if colorbar else .77, .72])
-        ax.set_box_aspect(1); ax.minorticks_on()
-        ax.text(0, 1.04, "FLASH", transform=ax.transAxes, weight="bold", fontsize=15)
-        ax.text(.22, 1.04, "Simulation Preliminary", transform=ax.transAxes, style="italic", fontsize=12)
-        ax.text(.97, .97, label, transform=ax.transAxes, ha="right", va="top", fontsize=9,
-                bbox=dict(facecolor="white", alpha=.9, edgecolor="none", pad=2))
-        ax.set_xlim(edges[0], edges[-1]); ax.set_xlabel("True photon-production Z [cm]")
-        return fig, ax
+        return _plot_axes(label,"True photon-production Z [cm]",(edges[0],edges[-1]),colorbar=colorbar)
     outputs = []
     def save(fig, name):
         for ext in ("pdf", "png"):
@@ -154,6 +159,35 @@ def render_response(product, target, *, label):
     with (target/"plot_manifest.json").open("x") as f:
         json.dump(dict(label=label, product=product, files=outputs,
             scope="development response, not certified detector performance"), f, indent=2, allow_nan=False)
+
+
+def render_resolution(row, plan, target, *, label):
+    """Inclusive all-photon accuracy versus assumed timestamp resolution."""
+    import matplotlib.pyplot as plt
+    points=np.asarray(plan['sigmas_ps'])
+    fig,ax=_plot_axes(label,"Assumed single-photon timing sigma [ps]",(-10,float(points.max())+10))
+    for model in plan['baselines']:
+        cases=[row['cases'][model['name']+'_'+str(int(s))+'ps'] for s in points]
+        y=np.array([r['within100mm_pct'] for r in cases])
+        limits=np.array([r['file_bootstrap_95']['within100mm_pct'] for r in cases])
+        color='#1676ad' if model['name']=='historical_fixed' else '#777777'
+        name=('Frozen-index baseline' if model['name']=='historical_fixed' else 'Axial-path baseline')
+        ax.fill_between(points,limits[:,0],limits[:,1],color=color,alpha=.2)
+        ax.plot(points,y,'o-',color=color,label=name,markersize=5)
+    ax.set_ylim(0,100)
+    ax.set_ylabel("Accepted photons within 10 cm of true Z [%]")
+    ax.legend(loc='upper left',bbox_to_anchor=(0,.86),fontsize=10)
+    paths=[Path(target)/('accuracy_vs_resolution.'+ext) for ext in ('pdf','png')]
+    if any(p.exists() for p in paths):
+        plt.close(fig); raise FileExistsError('Resolution figure already exists')
+    for path in paths: fig.savefig(path,dpi=220,facecolor='white')
+    plt.close(fig)
+    with (Path(target)/'resolution_manifest.json').open('x') as f:
+        json.dump(dict(label=label,cases=row['cases'],assumptions=plan,
+            interval='95% independent-source-file bootstrap; statistical only',
+            denominator='all scored accepted photons, including failed inversions',
+            lines='guides between tested timing assumptions, not an interpolated performance model',
+            files=[dict(file=p.name,sha256=file_sha256(p)) for p in paths]),f,indent=2,allow_nan=False)
 
 
 def plot(args):
@@ -239,6 +273,8 @@ def plot_campaign(args):
     target=Path(args.output);target.mkdir(parents=True,exist_ok=False)
     for sample,product,label in products:
         render_response(product,target/sample,label=label)
+        render_resolution(summary['samples'][sample],plan,target/sample,
+            label=label.split('\n')[0]+'\nIndependent-fiber proxy\nExact entrance time')
     import csv
     with (target/'all_resolution_results.csv').open('x',newline='') as f:
         writer=csv.writer(f)

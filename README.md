@@ -162,6 +162,9 @@ CHECKPOINT --plan all_photon_plan.json --output NEW_DIRECTORY --baseline axial
 --sigma-ps 50` writes three individual figures for every sample. It requires all
 40,000 events, checks the pinned plan and each histogram hash/closure before
 writing any plot, and records model and acquisition assumptions in each manifest.
+An additional accuracy-versus-timestamp-resolution figure compares both frozen
+baselines, with source-file statistical intervals and failed inversions retained
+in the denominator. The exported CSV contains all samples and resolution points.
 
 ## Comparison models and scope
 
