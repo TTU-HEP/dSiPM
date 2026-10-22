@@ -12,17 +12,27 @@ import subprocess
 import numpy as np
 
 from dsipm.io import load_cache, file_sha256
-from dsipm.depth import Calibration, fit_calibration, reconstruct
+from dsipm.depth import Calibration, fit_calibration, fit_timing_calibration, reconstruct
 from dsipm.sensors import smear_observations
 from dsipm.depth import evaluate, response_matrix
 
 
 def calibrate(args):
     obs, contract, truth, meta = load_cache(args.input)
-    if not meta["calibration_eligible"] or "kappa_truth" not in truth:
-        raise ValueError("Input is not validated calibration truth; do not train on transport proxies")
-    model = fit_calibration(obs, truth["kappa_truth"], contract, source_sha256=meta["input_sha256"],
-                            min_count=args.min_count)
+    if meta['provenance'].get('timestamp_sigma_ns')!=0:
+        raise ValueError('Calibration requires an explicitly noiseless input cache before controlled jitter')
+    noisy=smear_observations(obs,sigma_t_ns=args.sigma_ps/1000,entrance_sigma_ns=args.clock_ps/1000,seed=args.seed)
+    options=dict(source_sha256=meta['input_sha256'],min_count=args.min_count,
+                 training_sigma_ns=args.sigma_ps/1000,training_entrance_sigma_ns=args.clock_ps/1000)
+    if args.factor_kind=='timing_effective':
+        if 'truth_z_mm' not in truth:raise ValueError('Timing calibration requires production-Z truth')
+        model=fit_timing_calibration(noisy,truth['truth_z_mm'],contract,
+            truth_z_validation=meta['provenance'].get('truth_z_validation',''),**options)
+    else:
+        if not meta["calibration_eligible"] or "kappa_truth" not in truth:
+            raise ValueError("Input is not validated calibration truth; do not train on transport proxies")
+        model=fit_calibration(noisy,truth['kappa_truth'],contract,**options)
+    model=Calibration(dict(model.payload,training_noise_seed=args.seed))
     model.save(args.output)
     print(f"Calibration saved: {len(model.payload['training_events'])} events; SHA-256 {model.sha256}")
 
@@ -31,15 +41,20 @@ def scan(args):
     obs, contract, truth, meta = load_cache(args.input)
     if meta["provenance"].get("timestamp_sigma_ns") != 0:
         raise ValueError("Matched scan requires an explicitly noiseless timestamp cache")
-    calibration = Calibration.load(args.calibration)
-    if calibration.payload["training_sigma_ns"] != 0:
-        raise ValueError("This CLI scans a fixed ZERO-jitter calibration; use API for retrained studies")
+    loaded=[Calibration.load(p) for p in args.calibration]
+    calibrations={c.payload['training_sigma_ns']:c for c in loaded}
+    if len(calibrations)!=len(loaded):raise ValueError('Duplicate calibration timing sigma')
+    if args.allow_jitter_mismatch and len(loaded)!=1:raise ValueError('Fixed-calibration override takes exactly one model')
     if not args.sigmas_ps or len(set(args.sigmas_ps)) != len(args.sigmas_ps) or min(args.sigmas_ps) < 0 or args.draws < 1:
         raise ValueError("Invalid scan points/draw count")
     if not np.isfinite(args.sigmas_ps).all() or args.clock_ps < 0 or not np.isfinite(args.clock_ps):
         raise ValueError("Invalid timestamp/clock uncertainty")
     # Refuse overlap/compatibility errors BEFORE creating any output.
-    reconstruct(obs, calibration, contract, method="radius")
+    for sigma in args.sigmas_ps:
+        calibration=loaded[0] if args.allow_jitter_mismatch else calibrations.get(sigma/1000)
+        if calibration is None:raise ValueError('Missing jitter-matched calibration for '+str(sigma)+' ps')
+        reconstruct(obs,calibration,contract,method='radius',sigma_t_ns=sigma/1000,entrance_sigma_ns=args.clock_ps/1000,
+                    allow_jitter_mismatch=args.allow_jitter_mismatch)
     target = Path(args.output)
     target.mkdir(parents=True, exist_ok=False)
     try:
@@ -50,7 +65,8 @@ def scan(args):
     paths = list((Path(__file__).parent/"dsipm").glob("*.py"))+[Path(__file__)]
     code_hashes = {p.name: file_sha256(p) for p in sorted(paths)}
     manifest = dict(status="development_diagnostic_not_certified_physics", source_cache=meta,
-        calibration_sha256=calibration.sha256, calibration_mode="fixed_zero_jitter",
+        calibration_sha256={str(k):c.sha256 for k,c in calibrations.items()},
+        calibration_mode='explicit_fixed_calibration_override' if args.allow_jitter_mismatch else 'matched_per_sigma',
         sigma_ps=args.sigmas_ps, entrance_sigma_ps=args.clock_ps, draws=args.draws,
         seed=args.seed, code_revision=revision, dirty_checkout=dirty, code_sha256=code_hashes,
         target="individual accepted-photon creation depth; no photon rejected using truth",
@@ -60,6 +76,7 @@ def scan(args):
     if args.fixed_n_eff is not None:
         manifest["methods"].insert(0, "fixed")
     for sigma in args.sigmas_ps:
+        calibration=loaded[0] if args.allow_jitter_mismatch else calibrations[sigma/1000]
         for draw in range(args.draws):
             noisy = smear_observations(obs, sigma_t_ns=sigma/1000, entrance_sigma_ns=args.clock_ps/1000,
                                        seed=args.seed, draw=draw)
@@ -67,7 +84,7 @@ def scan(args):
                 result = reconstruct(noisy, calibration, contract, method=method, sigma_t_ns=sigma/1000,
                     entrance_sigma_ns=args.clock_ps/1000, window=args.window,
                     clean_radius=args.clean_radius, exclude_same_rod=args.leave_rod_out,
-                    fixed_n_eff=args.fixed_n_eff)
+                    fixed_n_eff=args.fixed_n_eff,allow_jitter_mismatch=args.allow_jitter_mismatch)
                 tag = f"{method}_{sigma:g}ps_draw{draw}"
                 output = target/(tag+".npz")
                 np.savez_compressed(output, event_key=obs.event_key, photon_id=obs.photon_id,
@@ -298,9 +315,14 @@ def main():
     sub = ap.add_subparsers(dest="mode", required=True)
     cal = sub.add_parser("calibrate")
     cal.add_argument("--input", required=True); cal.add_argument("--output", required=True)
-    cal.add_argument("--min-count", type=int, default=20); cal.set_defaults(run=calibrate)
+    cal.add_argument("--min-count", type=int, default=20)
+    cal.add_argument('--sigma-ps',type=float,default=0);cal.add_argument('--clock-ps',type=float,default=0)
+    cal.add_argument('--seed',type=int,default=20261021)
+    cal.add_argument('--factor-kind',choices=['geometric_path','timing_effective'],default='geometric_path')
+    cal.set_defaults(run=calibrate)
     run = sub.add_parser("scan")
-    run.add_argument("--input", required=True); run.add_argument("--calibration", required=True)
+    run.add_argument("--input", required=True); run.add_argument("--calibration", required=True,nargs='+')
+    run.add_argument('--allow-jitter-mismatch',action='store_true',help='Explicit fixed-calibration robustness study, not matched training')
     run.add_argument("--output", required=True)
     run.add_argument("--sigmas-ps", nargs="+", type=float, default=[0, 50, 200, 500])
     run.add_argument("--clock-ps", type=float, default=0.)

@@ -14,7 +14,7 @@ dsipm/
   io.py         immutable caches and hash-checked, Slurm-only existing-ROOT reader
 studyDepthReconstruction.py   compact-cache entry point: calibrate / scan / plot
 reduceDepthCampaign.py       Slurm-only complete-campaign baseline reduction / merge
-compareDepthCorrections.py   pion-only, source-held-out empirical depth ablations
+compareDepthCorrections.py   pion-only, held-out depth methods and empirical controls
 sensor_workflow.json         one canonical sensor configuration
 tests/                      focused physics and end-to-end regressions
 ```
@@ -76,14 +76,34 @@ unphysical distance is clipped into the detector. A tiny endpoint-roundoff
 tolerance is not a boundary-repair procedure. Near-face direct exits do not
 require TIR before a wall they never encounter.
 
-`fit_calibration(observations, kappa_truth, contract, source_sha256=...)` is the
-only estimator input taking truth. Inference rejects overlapping calibration
+`fit_calibration(observations, kappa_truth, contract, source_sha256=...)` fits
+validated geometric path factors. Separately, `fit_timing_calibration` (or its
+streaming batch variant) fits an **effective timing factor** from measured
+arrival time and geometry-checked production Z, using the exact inverse model:
+
+```text
+kappa_eff = (c*t - a_z*z_true - a_x*x - a_y*y - b) / (n_group*(L-z_true))
+```
+
+This needs neither photon direction nor exact creation time. It absorbs emission
+front mismatch, mixed propagation speeds and timestamp noise; it is **not**
+geometric path truth or a repair of transport physics. Finite factors below one
+(even negative factors under noise) are retained. Undefined Z=L calibration
+labels are counted, never used to remove evaluation photons. The geometric
+TIR guidance remains the default for geometric calibrations; timing-effective
+models default to physical-Z-range checks only. An explicit geometric-guidance
+variant tests that upper-bound heuristic without asserting it is a physical
+constraint on an effective coefficient.
+
+Inference rejects overlapping calibration
 and evaluation events and mismatched geometry, optics, workflow, gate or sensor
-models. Hold out tuning events as well; never choose cuts/windows on final test
+models. Photon jitter and entrance-clock jitter must match the calibration's
+recorded training values. Only an explicit `allow_jitter_mismatch` override
+permits a fixed-calibration robustness study. Hold out tuning events as well;
+never choose cuts/windows on final test
 scores. Defaults are development assumptions, not an optimized performance.
 
-The separate `compareDepthCorrections.py` study does **not** bypass the path-truth
-gate above. It directly calibrates conditional medians of geometry-checked
+The original `compareDepthCorrections.py --compare` study directly calibrated conditional medians of geometry-checked
 production Z, not kappa: measured time, then pixel exit radius, same-rod arrival
 delay, and other-rod timing in a 5x5 window. Five source-file folds keep every
 evaluation event out of its model's training. Feature bins/support thresholds
@@ -95,6 +115,21 @@ because they solve a validated optical inverse. These are sample-specific,
 empirical development comparisons, not proof of optical-path correction or
 energy-deposition resolution. Paired file-bootstrap errors condition on the
 fitted crossfit maps; they exclude refit and transport/model uncertainties.
+It is an empirical control, **not** a test of corrections 1-3. The new
+`--method-task` / `--method-merge` comparison invokes the actual `reconstruct`
+radius, radius-delay and neighbour methods on the same 5,000 pion events. It
+refits both the effective-factor calibration and empirical controls separately
+at each timing sigma, with five whole-source-file holdouts. It also reports a
+global-factor reference, range-only versus geometric-guidance ablations, and a
+no-timing prior. Radius bins resolve 0.9, 0.95 and 0.975 and retain outer-fiber
+pixel observations. Grouped sorting replaces repeated full-array bin masks.
+
+Headline metrics are failure-inclusive fractions within 5/10/20 cm and the
+absolute-error tolerance containing 68% of all accepted photons. Failed returns
+have infinite error in this CDF; that tolerance is undefined/unreachable if
+too many photons fail. A failed estimate has no signed residual or finite RMS
+without an explicitly declared penalty. Conditional residual widths remain
+labeled diagnostics, never substitutes for all-photon performance.
 
 ## Data and matched scans
 
@@ -117,11 +152,15 @@ an exit-direction proxy or transport-bug-derived path factor as validated truth.
 The raw reader requires Slurm and checks complete ROOT hashes before/after an
 exhausted read. Check the validated sidecar/production manifest upstream too.
 
-After preparing disjoint, validated caches with `timestamp_sigma_ns=0`:
+After preparing disjoint caches with `timestamp_sigma_ns=0` and documented
+`truth_z_validation` in the calibration cache provenance:
 
 ```bash
-python studyDepthReconstruction.py calibrate --input calibration_cache --output calibration.json
-python studyDepthReconstruction.py scan --input heldout_cache --calibration calibration.json \
+for timing_sigma_ps in 0 50 200 500; do
+  python studyDepthReconstruction.py calibrate --input calibration_cache \
+    --factor-kind timing_effective --sigma-ps "$timing_sigma_ps" --output "cal_${timing_sigma_ps}.json"
+done
+python studyDepthReconstruction.py scan --input heldout_cache --calibration cal_0.json cal_50.json cal_200.json cal_500.json \
   --output results/depth-scan --sigmas-ps 0 50 200 500 --clock-ps 0
 ```
 

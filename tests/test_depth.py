@@ -23,10 +23,11 @@ def observations(t, r=None, events=None, rx=None, ry=None):
         np.full(n, .1) if r is None else np.asarray(r, float), np.zeros(n), np.zeros(n))
 
 
-def calibration(contract=None, k=1.02, quantiles=None):
+def calibration(contract=None, k=1.02, quantiles=None, sigma=0.,clock=0.):
     contract = contract or DepthContract()
     o = observations(np.linspace(7, 9, 30), events=["train"]*30)
-    c = fit_calibration(o, np.full(30, k), contract, source_sha256="a"*64)
+    c = fit_calibration(o, np.full(30, k), contract, source_sha256="a"*64,
+                        training_sigma_ns=sigma,training_entrance_sigma_ns=clock)
     if quantiles is not None:
         p = copy.deepcopy(c.payload)
         p["joint_quantiles"] = np.broadcast_to(quantiles, np.asarray(p["joint_quantiles"]).shape).tolist()
@@ -81,7 +82,7 @@ class DepthReconstructionTests(unittest.TestCase):
 
     def test_local_timing_uncertainties_are_separate_not_total_errors(self):
         c = DepthContract(); o = observations([c.forward_time(1000, 1.02)])
-        r = reconstruct(o, calibration(c), c, sigma_t_ns=.05, entrance_sigma_ns=.01)
+        r = reconstruct(o, calibration(c,sigma=.05,clock=.01), c, sigma_t_ns=.05, entrance_sigma_ns=.01)
         self.assertAlmostEqual(r.photon_timing_sigma_z_mm[0], .05*C_MM_NS/(c.n_group*1.02-c.front_z))
         self.assertAlmostEqual(r.entrance_timing_sigma_z_mm[0], r.photon_timing_sigma_z_mm[0]/5)
 
@@ -97,7 +98,7 @@ class DepthReconstructionTests(unittest.TestCase):
 
     def test_isolated_photon_has_exactly_zero_support(self):
         c = DepthContract(); o = observations([c.forward_time(1000, 1.02)])
-        r = reconstruct(o, calibration(c), c, sigma_t_ns=.05)
+        r = reconstruct(o, calibration(c,sigma=.05), c, sigma_t_ns=.05)
         self.assertTrue(r.prior_seed[0])
         self.assertEqual(float(r.candidate_density.max()), 0)
         self.assertEqual(r.status[0], DepthStatus.CALIBRATED_FALLBACK)
@@ -217,6 +218,68 @@ class DepthResponseTests(unittest.TestCase):
 
 
 class EmpiricalCorrectionTests(unittest.TestCase):
+    def test_timing_effective_factor_roundtrips_tilt_speed_and_delay(self):
+        from dsipm.depth import timing_effective_factor
+        c,_,_=dreamsim_front_contract()
+        z=np.array([500.,1000.,1950.]);factor=np.array([1.02,.96,-.2])
+        a=observations(c.forward_time(z,factor),events=['train']*3)
+        k=timing_effective_factor(a,z,c)
+        np.testing.assert_allclose(k,factor,atol=1e-13)
+        np.testing.assert_allclose(c.inverse(a.time_ns,k),z,atol=1e-9)
+        self.assertTrue(np.isnan(timing_effective_factor(observations([8.]),[2000.],c)[0]))
+
+    def test_timing_calibration_counts_undefined_labels_without_removing_evaluation(self):
+        from dsipm.depth import fit_timing_calibration
+        c=DepthContract();z=np.array([500.,1000.,2000.]);a=observations(c.forward_time(z,.96),events=['train']*3)
+        model=fit_timing_calibration(a,z,c,source_sha256='a'*64,truth_z_validation='synthetic exact creation positions')
+        self.assertEqual(model.payload['training_input_photons'],3)
+        self.assertEqual(model.payload['undefined_factor_photons'],1)
+        self.assertEqual(model.payload['effective_factors_below_one'],2)
+        self.assertGreater(model.payload['radius_edges'][-1],1)
+        test=observations([a.time_ns[0],a.time_ns[1],100.],events=['eval']*3)
+        result=reconstruct(test,model,c,method='radius')
+        self.assertEqual(len(result.z_mm),3)
+        np.testing.assert_allclose(result.z_mm[:2],z[:2],atol=1e-9)
+        self.assertTrue(np.isnan(result.z_mm[2]))
+        self.assertFalse(result.options['geometric_guidance'])
+        with self.assertRaises(ValueError):
+            fit_timing_calibration(a,z,c,source_sha256='a'*64,truth_z_validation='')
+
+    def test_jitter_must_match_or_be_explicitly_overridden(self):
+        c=DepthContract();a=observations([8.])
+        with self.assertRaisesRegex(ValueError,'jitter mismatch'):
+            reconstruct(a,calibration(c),c,sigma_t_ns=.05)
+        with self.assertRaisesRegex(ValueError,'jitter mismatch'):
+            reconstruct(a,calibration(c,sigma=.05),c,sigma_t_ns=.05,entrance_sigma_ns=.01)
+        r=reconstruct(a,calibration(c),c,sigma_t_ns=.05,allow_jitter_mismatch=True)
+        self.assertEqual(r.options['calibration_mode'],'explicit_fixed_calibration_override')
+        r=reconstruct(a,calibration(c,sigma=.05),c,sigma_t_ns=.05)
+        self.assertEqual(r.options['calibration_mode'],'jitter_matched')
+
+    def test_grouped_fit_is_permutation_identical_and_matches_mask_reference(self):
+        rng=np.random.default_rng(7);n=90
+        a=observations(rng.uniform(7,10,n),r=rng.uniform(0,1,n),events=['train']*n)
+        k=rng.uniform(1,2,n);c=DepthContract()
+        options=dict(source_sha256='b'*64,min_count=3,radius_edges=[0,.5,.9,.95,1],delay_edges_ns=[.01,.1,1])
+        m=fit_calibration(a,k,c,**options);ri,ti=m.bins(a);p=m.payload
+        for r in range(len(p['radius_median'])):
+            use=ri==r
+            expected=np.median(k[use]) if use.sum()>=3 else np.median(k)
+            self.assertEqual(p['radius_median'][r],expected)
+            for t in range(len(p['delay_edges_ns'])+1):
+                joint=use&(ti==t)
+                value=np.median(k[joint]) if joint.sum()>=3 else expected
+                self.assertEqual(p['joint_median'][r][t],value)
+        order=rng.permutation(n);b=fit_calibration(a.subset(order),k[order],c,**options)
+        self.assertEqual(m.sha256,b.sha256)
+
+    def test_inclusive_error_quantiles_assign_failures_infinite_error(self):
+        r=residual_summary([0.,0.,0.,0.],[1.,2.,3.,np.nan])
+        self.assertEqual(r['inclusive_abs_error_quantiles_mm']['0.68'],3.)
+        self.assertIsNone(r['inclusive_abs_error_quantiles_mm']['0.95'])
+        r=residual_summary([0.,0.,0.],[1.,np.nan,np.nan])
+        self.assertIsNone(r['inclusive_abs_error_quantiles_mm']['0.68'])
+
     def test_measured_features_exclude_target_rod_and_other_events(self):
         from compareDepthCorrections import observable_features,feature_spec
         spec=feature_spec();c=DepthContract()
@@ -307,6 +370,22 @@ class EmpiricalCorrectionTests(unittest.TestCase):
             with np.load(root/'comparison/comparison.npz') as f:
                 self.assertTrue(np.all(f['denominator'].sum(axis=-1)==80))
                 np.testing.assert_array_equal(f['response'].sum(axis=-1)+f['failures'],f['denominator'])
+            from compareDepthCorrections import method_task,merge_methods,TIMING_METHODS
+            method_plan=dict(plan,cache_directory=str(root),factor_min_count=3,
+                truth_z_validation='synthetic exact creation positions',window_rods=5,clean_radius=.7)
+            with patch.dict('os.environ',{'SLURM_JOB_ID':'fixture_methods'}):
+                for fold in range(2):
+                    for sigma in plan['sigmas_ps']:
+                        report=method_task(rows,method_plan,plan,root/'method_results'/f'fold{fold}_{sigma}ps',fold=fold,sigma=sigma)
+                        self.assertEqual(report['training_sigma_ns'],sigma/1000)
+                        self.assertEqual(report['reconstruction_options']['neighbour']['method'],'neighbour')
+                        self.assertFalse(report['reconstruction_options']['neighbour']['geometric_guidance'])
+                        self.assertTrue(report['reconstruction_options']['neighbour_guided']['geometric_guidance'])
+                report=merge_methods(rows,method_plan,root,root/'actual_methods')
+            self.assertEqual(report['events'],4)
+            self.assertEqual(report['accepted_photons'],80)
+            self.assertEqual(report['methods'],list(TIMING_METHODS))
+            for case in report['cases'].values():self.assertEqual(case['input'],80)
 
 
 class AllPhotonCampaignTests(unittest.TestCase):
@@ -649,7 +728,7 @@ class DepthPipelineTests(unittest.TestCase):
             subprocess.run([sys.executable, str(REPO/"studyDepthReconstruction.py"), "calibrate", "--input", str(d/"train"),
                             "--output", str(d/"cal.json")], check=True, capture_output=True, text=True)
             cmd = [sys.executable, str(REPO/"studyDepthReconstruction.py"), "scan", "--input", str(d/"test"),
-                   "--calibration", str(d/"cal.json"), "--output", str(d/"scan"), "--bootstrap-draws", "8"]
+                   "--calibration", str(d/"cal.json"), "--output", str(d/"scan"), "--bootstrap-draws", "8",'--allow-jitter-mismatch']
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             report = json.loads((d/"scan/summary.json").read_text())
             self.assertEqual(len(report["results"]), 12)
