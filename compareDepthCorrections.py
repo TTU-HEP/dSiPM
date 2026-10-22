@@ -324,6 +324,17 @@ def plot(directory, target, plan):
                 label=LABELS[mi],ls='--' if mi==5 else '-',ms=4)
     ax.set(ylim=(0,100),ylabel='Accepted photons within 10 cm of true Z [%]')
     ax.legend(fontsize=9,loc='upper right');save(fig,'accuracy_vs_timing_all_methods')
+    fig,ax = _plot_axes('100 GeV pion\nRelative to calibrated time only\nPaired 95% file-bootstrap intervals',
+                       'Assumed single-photon timing sigma [ps]',(-10,510))
+    ax.axhline(0,color='#666666',ls='--',lw=1.2)
+    for mi in (2,3,4):
+        cases=[s['cases'][METHODS[mi]+'_'+str(t)+'ps'] for t in plan['sigmas_ps']]
+        gain=np.array([c['paired_gain_vs_time_pp'] for c in cases])
+        limits=np.array([c['paired_gain_vs_time_stat95'] for c in cases])
+        ax.fill_between(plan['sigmas_ps'],limits[:,0],limits[:,1],color=COLORS[mi],alpha=.18)
+        ax.plot(plan['sigmas_ps'],gain,'o-',color=COLORS[mi],label=LABELS[mi],ms=4)
+    ax.set_ylabel('Change in within-10-cm fraction [percentage points]',fontsize=12)
+    ax.legend(fontsize=10);save(fig,'added_information_vs_time_only')
     fig,ax = _plot_axes('100 GeV pion; 50 ps\nSame accepted photons; failures included',
                        'Allowed absolute Z error [cm]',(0,200))
     edges=h['residual_edges_mm']; centers=(edges[:-1]+edges[1:])/2
