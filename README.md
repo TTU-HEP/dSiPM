@@ -14,6 +14,7 @@ dsipm/
   io.py         immutable caches and hash-checked, Slurm-only existing-ROOT reader
 studyDepthReconstruction.py   compact-cache entry point: calibrate / scan / plot
 reduceDepthCampaign.py       Slurm-only complete-campaign baseline reduction / merge
+compareDepthCorrections.py   pion-only, source-held-out empirical depth ablations
 sensor_workflow.json         one canonical sensor configuration
 tests/                      focused physics and end-to-end regressions
 ```
@@ -80,6 +81,20 @@ only estimator input taking truth. Inference rejects overlapping calibration
 and evaluation events and mismatched geometry, optics, workflow, gate or sensor
 models. Hold out tuning events as well; never choose cuts/windows on final test
 scores. Defaults are development assumptions, not an optimized performance.
+
+The separate `compareDepthCorrections.py` study does **not** bypass the path-truth
+gate above. It directly calibrates conditional medians of geometry-checked
+production Z, not kappa: measured time, then pixel exit radius, same-rod arrival
+delay, and other-rod timing in a 5x5 window. Five source-file folds keep every
+evaluation event out of its model's training. Feature bins/support thresholds
+are fixed before evaluation; all methods retain identical accepted photons and
+matched 0/50/200/500 ps jitter, with fixed zero-jitter training. Sparse cells
+explicitly fall back to less detailed models. A no-timing depth-prior control
+is mandatory: direct conditional estimates are physical by construction, not
+because they solve a validated optical inverse. These are sample-specific,
+empirical development comparisons, not proof of optical-path correction or
+energy-deposition resolution. Paired file-bootstrap errors condition on the
+fitted crossfit maps; they exclude refit and transport/model uncertainties.
 
 ## Data and matched scans
 

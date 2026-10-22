@@ -216,6 +216,93 @@ class DepthResponseTests(unittest.TestCase):
             with self.assertRaises(ValueError): response_matrix([10.], [20.], bins=bins)
 
 
+class EmpiricalCorrectionTests(unittest.TestCase):
+    def test_measured_features_exclude_target_rod_and_other_events(self):
+        from compareDepthCorrections import observable_features,feature_spec
+        spec=feature_spec();c=DepthContract()
+        a=observations([8.,9.,7.,30.,5.],events=['a','a','a','a','b'],rx=[0,0,1,20,0])
+        f=observable_features(a,c,spec)
+        # Same-rod relative delay is recomputed from measured times.
+        self.assertEqual(f[0,2],0)
+        self.assertEqual(f[1,2],np.searchsorted(spec['delay_edges_ns'],1.,side='right'))
+        # The other rod has first time 7 ns; own 8 ns is excluded completely.
+        self.assertEqual(f[0,3],np.searchsorted(spec['neighbour_edges_ns'],1.,side='right'))
+        # A distant rod and a separate event have no neighbours.
+        self.assertEqual(f[3,3],len(spec['neighbour_edges_ns'])+1)
+        self.assertEqual(f[4,3],len(spec['neighbour_edges_ns'])+1)
+        perm=np.array([4,2,1,3,0]); b=a.subset(perm)
+        np.testing.assert_array_equal(observable_features(b,c,spec),f[perm])
+
+    def test_empirical_maps_are_labelled_depth_not_kappa_and_fallback_is_explicit(self):
+        from compareDepthCorrections import dimensions,fit_tables,predict_tables
+        spec=dict(time_edges_ns=[8.],radius_edges=[.5],delay_edges_ns=[0.],neighbour_edges_ns=[0.],
+                  target_edges_mm=[0.,1000.,2000.],min_photons=2,min_sources=2)
+        dims=dimensions(spec);h=np.zeros(dims+(2,),np.int64)
+        h[0,0,0,0,0]=10;h[1,1,0,0,1]=10
+        supports=[np.zeros(dims[:j],np.int64) for j in range(1,5)]
+        # Independent sources, not the 20 photons, determine support.
+        supports[0][:]=2
+        tables,valid=fit_tables(h,supports,spec)
+        z,levels=predict_tables(np.array([[0,0,0,0],[1,1,0,0]]),tables,valid)
+        np.testing.assert_allclose(z[0],[500.,1500.])
+        np.testing.assert_array_equal(levels[-1],[1,1])
+        # Changing held-out labels cannot enter the inference API.
+        self.assertEqual(len(z),4)
+        self.assertTrue(np.all((z[-1]>=0)&(z[-1]<=2000)))
+        with self.assertRaises(ValueError):fit_tables(h[:1],supports,spec)
+        with self.assertRaises(ValueError):fit_tables(h*0,supports,spec)
+
+    def test_score_includes_all_failures_and_exact_tolerance_endpoints(self):
+        from compareDepthCorrections import score
+        ze=np.array([0.,1000.,2000.]);re=np.array([-2000.,0.,2000.])
+        h=dict(response=np.zeros((1,1,2,2),np.int64),failures=np.zeros((1,1,2),np.int64),
+               denominator=np.zeros((1,1,2),np.int64),within=np.zeros((1,1,2,3),np.int64),
+               residual=np.zeros((1,1,2),np.int64))
+        r=score(h,0,0,np.array([0.,1000.,2000.,50.]),np.array([100.,np.nan,2001.,0.]),ze,re)
+        np.testing.assert_array_equal(r,[4,2,1,2,2])
+        np.testing.assert_array_equal(h['response'].sum(axis=-1)+h['failures'],h['denominator'])
+
+    def test_complete_crossfit_replays_baseline_and_keeps_source_holdouts(self):
+        from unittest.mock import patch
+        from dataclasses import asdict
+        from compareDepthCorrections import compare
+        from reduceDepthCampaign import make_histograms,accumulate
+        from dsipm.io import file_sha256
+        c=DepthContract();rows=[]
+        spec=dict(time_edges_ns=[8.],radius_edges=[.5],delay_edges_ns=[0.],neighbour_edges_ns=[0.],
+                  target_edges_mm=[0.,1000.,2000.],min_photons=1,min_sources=1,window_rods=5)
+        plan=dict(_sha256='b'*64,code_revision='test',contract=asdict(c),contract_sha256=c.sha256,
+                  z_edges_mm=[0.,1000.,2000.],residual_edges_mm=[-2000.,0.,2000.],sigmas_ps=[0,50],
+                  baselines=[dict(name='axial',n_eff=1.49)],noise_seed=123,crossfit_folds=2,empirical_features=spec)
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for i in range(4):
+                sha=str(i)*64;key=sha+':0'
+                row=dict(root_file='/fake/'+str(i)+'.root',root_sha256=sha,events=1,offset=i,sample='piplus_100gev',fold=i%2)
+                rows.append(row);out=root/'results'/str(i);out.mkdir(parents=True)
+                a=observations(np.linspace(8,9,20),events=[key]*20)
+                truth=c.inverse(a.time_ns,1.)
+                np.savez_compressed(out/'accepted.npz',entry=np.zeros(20,np.int32),truth_z_mm=truth,
+                    **{k:getattr(a,k) for k in a.__dataclass_fields__ if k!='event_key'})
+                h=make_histograms(plan)
+                for si,s in enumerate(plan['sigmas_ps']):
+                    noisy=smear_observations(a,sigma_t_ns=s/1000,seed=plan['noise_seed'])
+                    accumulate(h,0,si,truth,c.inverse(noisy.time_ns,1.),plan['z_edges_mm'],plan['residual_edges_mm'])
+                np.savez_compressed(out/'histograms.npz',**h)
+                (out/'audit.json').write_text(json.dumps(dict(input={k:v for k,v in row.items() if k!='fold'},
+                    plan_sha256=plan['_sha256'],contract_sha256=c.sha256,records=[dict(entry=0,accepted=20)],
+                    observations_sha256=file_sha256(out/'accepted.npz'),histograms_sha256=file_sha256(out/'histograms.npz'))))
+            with patch.dict('os.environ',{'SLURM_JOB_ID':'fixture'}):compare(rows,plan,root,root/'comparison')
+            summary=json.loads((root/'comparison/summary.json').read_text())
+            self.assertEqual(summary['accepted_photons'],80)
+            for model in summary['calibrations']:
+                self.assertFalse(set(model['training_sources']) & set(model['evaluation_sources']))
+                self.assertEqual(model['training_photons'],40)
+            with np.load(root/'comparison/comparison.npz') as f:
+                self.assertTrue(np.all(f['denominator'].sum(axis=-1)==80))
+                np.testing.assert_array_equal(f['response'].sum(axis=-1)+f['failures'],f['denominator'])
+
+
 class AllPhotonCampaignTests(unittest.TestCase):
     def test_all_inputs_include_nonphysical_and_nonfinite_failures(self):
         from reduceDepthCampaign import make_histograms, accumulate

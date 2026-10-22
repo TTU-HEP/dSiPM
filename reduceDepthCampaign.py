@@ -80,6 +80,8 @@ def reduce_one(row, plan, output):
             raise ValueError("Existing output has different provenance")
         if file_sha256(target/'histograms.npz') != report['histograms_sha256']:
             raise ValueError("Existing output checksum mismatch")
+        if plan.get('cache_accepted_observations') and file_sha256(target/'accepted.npz') != report.get('observations_sha256'):
+            raise ValueError('Accepted-observation cache checksum mismatch')
         return report
     side = Path(str(source)+'.validation.json')
     if file_sha256(side) != row['sidecar_sha256']:
@@ -108,6 +110,7 @@ def reduce_one(row, plan, output):
     ze, re = np.asarray(plan['z_edges_mm']), np.asarray(plan['residual_edges_mm'])
     arrays = make_histograms(plan)
     records = []
+    cached = []
     for key, (all_event, original_ids, truth, counts) in iter_corrected_root(source, row['root_sha256'], reader):
         entry = int(key.rsplit(':',1)[1])
         in_gate = (all_event.time_ns > contract.gate_ns[0]) & (all_event.time_ns < contract.gate_ns[1])
@@ -122,6 +125,9 @@ def reduce_one(row, plan, output):
         batch = make_observations(event,key,contract,entrance_time_ns=entrance,
             photon_ids=original_ids[order],accepted_mask=digit.accepted_mask,external_detected_mask=digit.detected_mask)
         accepted_truth = z[batch.accepted_indices]
+        if plan.get('cache_accepted_observations'):
+            cached.append(dict(entry=np.full(len(accepted_truth),entry,np.int32),truth_z_mm=accepted_truth,
+                **{k:getattr(batch.photons,k) for k in batch.photons.__dataclass_fields__ if k!='event_key'}))
         stages = [truth['truth_z_mm'],truth['truth_z_mm'][~in_gate],z,z[~digit.detected_mask],
                   z[digit.detected_mask & ~digit.accepted_mask],accepted_truth]
         for i, values in enumerate(stages):
@@ -161,6 +167,9 @@ def reduce_one(row, plan, output):
         target='all accepted individual photon production depths, not first hits or energy deposition',
         stage_names=['all_geometric_downstream','outside_sensor_window','incident_in_window','not_detected','lost_holdoff','accepted'],
         optical_transport_validated=False,trained_path_models=False)
+    if plan.get('cache_accepted_observations'):
+        np.savez_compressed(stage/'accepted.npz',**{k:np.concatenate([r[k] for r in cached]) for k in cached[0]})
+        report['observations_sha256']=file_sha256(stage/'accepted.npz')
     if not np.array_equal(arrays['stage_truth'][0],arrays['stage_truth'][1]+arrays['stage_truth'][2]):
         raise ValueError('Acquisition-window photon closure failed')
     if not np.array_equal(arrays['stage_truth'][2],arrays['stage_truth'][3]+arrays['stage_truth'][4]+arrays['stage_truth'][5]):
