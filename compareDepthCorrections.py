@@ -49,7 +49,10 @@ def observable_features(obs, contract, spec):
     """
     if spec['window_rods'] < 1 or spec['window_rods'] % 2 != 1:
         raise ValueError('Need an odd positive neighbourhood')
-    if np.any(obs.radius > 1+contract.radius_padding+1e-10):
+    # Accepted endpoints may lie in the cladding, not just the core. Radius is
+    # the measured pixel centre, with half-diagonal quantization uncertainty.
+    # Do not drop this valid observation population or relabel it path truth.
+    if np.any(obs.radius > (contract.fiber_outer_radius_mm+1e-5)/contract.core_radius_mm+contract.radius_padding+1e-10):
         raise ValueError('Pixel radius incompatible with sensor contract')
     tau = obs.time_ns-(contract.front_x*obs.sensor_x_mm+contract.front_y*obs.sensor_y_mm
                        +contract.front_offset_mm)/C_MM_NS
@@ -255,7 +258,9 @@ def compare(rows, plan, directory, target):
         plan_sha256=plan['_sha256'],events=sum(r['events'] for r in rows),files=len(rows),
         accepted_photons=int(central[0,0,0]),methods=list(METHODS),sigmas_ps=plan['sigmas_ps'],
         cases=cases,calibrations=calibrations,source_records=source_records,closure=True,
-        code_revision=plan['code_revision'],optical_transport_validated=False,
+        code_revision=plan.get('analysis_code_revision',plan['code_revision']),
+        extraction_code_revision=plan['code_revision'],
+        aggregate_source_manifest_sha256=plan.get('aggregate_source_manifest_sha256'),optical_transport_validated=False,
         training='fixed zero-jitter conditional production-Z medians; not kappa/path truth; no fit on evaluation files',
         bootstrap='500 paired source-file draws; conditional on the fitted crossfit maps; no refit or transport systematic',
         physical_range='learned estimates are physical by construction, not by validated timing inversion',
@@ -351,7 +356,15 @@ def main():
         plot(args.directory,args.plot,plan);return
     if not os.environ.get('SLURM_JOB_ID'): raise RuntimeError('Existing-photon analysis requires Slurm')
     for name,sha in plan['code_sha256'].items():
-        if file_sha256(Path(__file__).parent/name)!=sha: raise ValueError('Code hash mismatch: '+name)
+        if file_sha256((args.plan.parent if args.compare else Path(__file__).parent)/name)!=sha:
+            raise ValueError('Extraction code hash mismatch: '+name)
+    if args.compare and Path(__file__).parent.resolve()!=args.plan.parent.resolve():
+        path=Path(__file__).parent/'aggregate_source.json';source=json.loads(path.read_text())
+        if source['plan_sha256']!=plan['_sha256']: raise ValueError('Aggregate source plan mismatch')
+        for name,sha in source['code_sha256'].items():
+            if file_sha256(Path(__file__).parent/name)!=sha: raise ValueError('Aggregate source hash mismatch: '+name)
+        plan['analysis_code_revision']=source['code_revision']
+        plan['aggregate_source_manifest_sha256']=file_sha256(path)
     if file_sha256(plan['input_manifest'])!=plan['input_manifest_sha256']: raise ValueError('Input manifest hash mismatch')
     all_rows=json.loads(Path(plan['input_manifest']).read_text())
     rows=plan['sources']

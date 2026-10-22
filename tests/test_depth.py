@@ -232,6 +232,12 @@ class EmpiricalCorrectionTests(unittest.TestCase):
         self.assertEqual(f[4,3],len(spec['neighbour_edges_ns'])+1)
         perm=np.array([4,2,1,3,0]); b=a.subset(perm)
         np.testing.assert_array_equal(observable_features(b,c,spec),f[perm])
+        # Radius is normalized to the *core*, while valid accepted endpoints
+        # can be in cladding up to the outer radius. Never silently cut them.
+        edge=c.fiber_outer_radius_mm/c.core_radius_mm+c.radius_padding
+        self.assertEqual(observable_features(observations([8.],r=[edge]),c,spec).shape,(1,4))
+        with self.assertRaisesRegex(ValueError,'radius'):
+            observable_features(observations([8.],r=[edge+.001]),c,spec)
 
     def test_empirical_maps_are_labelled_depth_not_kappa_and_fallback_is_explicit(self):
         from compareDepthCorrections import dimensions,fit_tables,predict_tables
