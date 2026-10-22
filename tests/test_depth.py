@@ -12,7 +12,7 @@ from dsipm.depth import (C_MM_NS, Calibration, DepthContract, DepthStatus, Photo
                         channel_delay, fit_calibration, reconstruct, evaluate, residual_summary, response_matrix)
 from dsipm.sensors import make_observations, smear_observations
 from dsipm.geometry import (FIBER_OFFSETS_MM, dreamsim_front_contract, localize_endpoints,
-                           rotation, world_to_calorimeter, RayStatus, trace_cylinder)
+                           rotation, world_to_calorimeter, RayStatus, trace_cylinder, DreamsimDetector)
 from dsipm.io import save_cache, load_cache, iter_corrected_root, corrected_event_from_arrays
 
 def observations(t, r=None, events=None, rx=None, ry=None):
@@ -648,6 +648,217 @@ class DepthGeometryTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "Slurm"):
                 next(iter_corrected_root("nonexistent", "a"*64, DepthContract()))
+
+
+class UpstreamDetectorTests(unittest.TestCase):
+    """Portable source-form fixtures; real-source and ROOT replay also run on HPCC."""
+    @staticmethod
+    def source_fixture():
+        geometry = '''
+double fiberLength = 250.0 * cm;
+double rodSize = 0.4 * cm;
+double noRods = 90.0;
+double noLayers = 80.0;
+double holeDiameter = 0.25 * cm;
+double clad_Plastic_rMax = 0.40 * mm;
+double core_Plastic_rMax = 0.39 * mm;
+double clad_S_rMax = 0.40 * mm;
+double core_S_rMax = 0.39 * mm;
+G4LogicalVolume *fiberCoreQuartzLog = new G4LogicalVolume(fiberC, core_Quartz_Material, "fiberCoreQuartz");
+double R = clad_Plastic_rMax * 2.0 + 0.01;
+double cx1 = R * cos(30.0 * deg);
+double cy1 = R * sin(30.0 * deg);
+G4double RefractiveIndex_PMMA[nEntries] = {1.504, 1.504};
+G4double RefractiveIndex_FluorinatedPolymer[nEntries] = {1.42, 1.42};
+G4double RefractiveIndex_Polystyrene[nEntries] = {1.622, 1.622};
+std::fill_n(RefractiveIndex_FusedSilica, nEntries, 1.468);
+std::fill_n(RefractiveIndex_HardPolymer, nEntries, 1.42);
+'''
+        for logical, positions in [('fiberPlasticLog', [('0.', '0.', 0), ('cx1', 'cy1', 1)]),
+                ('fiberQuartzLog', [('-cx1', 'cy1', 2), ('0.', '-R', 3)]),
+                ('fiberSLog', [('cx1', '-cy1', 1), ('0.', 'R', 2), ('-cx1', '-cy1', 3)])]:
+            for x, y, i in positions:
+                geometry += f'new G4PVPlacement(0, G4ThreeVector({x}, {y}, 0.), {logical}, "fiber", holeLV, false, {i}, fCheckOverlaps);\n'
+        sources = {'sim/src/CaloXDetectorConstruction.cc': geometry,
+            'sim/src/CaloXSteppingAction.cc':'const bool isSampleRod = (rodNumber == opSampleRod && layerNumber == opSampleLayer);',
+            'sim/src/CaloXTree.cc':'// schema fixture', 'sim/src/CaloXPrimaryGeneratorAction.cc':'// world-z fixture'}
+        values = dict(caloRotationX=2, caloRotationY=2, opSampleRod=45, opSampleLayer=40)
+        for axis, value in zip('xyz', (2.5, -2.5, -130)):
+            for bound in ('min', 'max'):
+                values[f'gun_{axis}_{bound}'] = value
+                values[f'pMomentum_{axis}_{bound}'] = int(axis == 'z')
+        macro = ''.join(f'#$$$ {k} {v}\n' for k, v in values.items())
+        return sources, macro
+
+    @classmethod
+    def detector(cls):
+        return DreamsimDetector.from_sources('a'*40, *cls.source_fixture())
+
+    @classmethod
+    def arrays(cls, n=8):
+        d = cls.detector()
+        fibers = np.arange(n, dtype=np.int64) % 4
+        offsets = {i:(x, y) for kind, i, x, y in d.fibers if kind != 'scintillation'}
+        xy = np.array([offsets[i] for i in fibers])+[2., 2.]
+        end = np.column_stack([xy, np.full(n, 1250.)]) @ rotation()/10
+        birth = np.column_stack([xy, np.zeros(n)]) @ rotation()/10
+        momentum = np.tile([0., 0., 1.], (n, 1)) @ rotation()
+        a = dict(OP_time_final=np.full(n, 8.), OP_time_produced=np.full(n, 1.),
+            OP_productionFiber=fibers, OP_finalFiber=np.full(n, -99, np.int64),
+            OP_isCoreC=fibers < 2, OP_isCoreQ=fibers >= 2, OP_isCerenkov=np.ones(n, bool),
+            OP_productionRod=np.full(n, 45, np.int64), OP_productionLayer=np.full(n, 40, np.int64),
+            OP_trackid=np.arange(1, n+1, dtype=np.int64),
+            OP_analyticalArrivalTime_s=np.array(['never read']*n))
+        for j, axis in enumerate('xyz'):
+            a['OP_pos_final_'+axis] = end[:, j]
+            a['OP_pos_produced_'+axis] = birth[:, j]
+            a['OP_mom_final_'+axis] = momentum[:, j]
+        return a
+
+    def test_source_derived_length_materials_and_historical_separation(self):
+        d = self.detector()
+        plastic, entrance, face = d.contract('plastic')
+        quartz, _, _ = d.contract('quartz')
+        self.assertEqual((d.length_mm, d.n_rods, d.n_layers), (2500., 90, 80))
+        self.assertEqual((plastic.n_phase, quartz.n_phase, plastic.n_clad), (1.504, 1.468, 1.42))
+        self.assertNotEqual(plastic.sha256, quartz.sha256)
+        self.assertGreater(entrance, 0)
+        self.assertAlmostEqual(world_to_calorimeter([face])[0, 2], -1250.)
+        with self.assertRaisesRegex(ValueError, 'override'):
+            d.contract('plastic', length_mm=2000.)
+        with self.assertRaisesRegex(ValueError, 'contract mismatch'):
+            d.check_contract(dreamsim_front_contract()[0], 'plastic')
+        with self.assertRaisesRegex(ValueError, 'contract mismatch'):
+            d.check_contract(plastic, 'quartz')
+
+    def test_rejects_upstream_overlap_and_unsupported_dispersion(self):
+        sources, macro = self.source_fixture()
+        name = 'sim/src/CaloXDetectorConstruction.cc'
+        sources[name] = sources[name].replace('(-cx1, cy1, 0.), fiberQuartzLog', '(-cx1, -cy1, 0.), fiberQuartzLog')
+        with self.assertRaisesRegex(ValueError, 'Overlapping'):
+            DreamsimDetector.from_sources('a'*40, sources, macro)
+        sources, macro = self.source_fixture()
+        sources[name] = sources[name].replace('{1.504, 1.504}', '{1.504, 1.505}')
+        with self.assertRaisesRegex(ValueError, 'Dispersive'):
+            DreamsimDetector.from_sources('a'*40, sources, macro)
+
+    def test_source_hash_scope_and_beam_changes_invalidate_contract(self):
+        sources, macro = self.source_fixture()
+        d = self.detector()
+        changed = DreamsimDetector.from_sources('a'*40, sources, macro.replace('opSampleRod 45', 'opSampleRod 46'))
+        self.assertNotEqual(d.sha256, changed.sha256)
+        with self.assertRaisesRegex(ValueError, 'fixed world-z'):
+            DreamsimDetector.from_sources('a'*40, sources, macro.replace('pMomentum_x_max 0', 'pMomentum_x_max 1'))
+        with self.assertRaisesRegex(ValueError, 'explicitly define'):
+            DreamsimDetector.from_sources('a'*40, sources, macro.replace('#$$$ opSampleLayer 40\n', ''))
+        sources['sim/src/CaloXTree.cc'] += '// changed producer schema'
+        self.assertNotEqual(d.sha256, DreamsimDetector.from_sources('a'*40, sources, macro).sha256)
+
+    def test_all_material_fibers_at_replica_edges_roundtrip(self):
+        d = self.detector()
+        for kind, f, x, y in d.fibers:
+            if kind == 'scintillation': continue
+            for ix, iy in [(-45, -40), (0, 0), (44, 39)]:
+                local = np.array([[2+4*ix+x+.2, 2+4*iy+y-.1, 1250.]])
+                actual, _, rods, _, back = localize_endpoints(local @ rotation(), np.array([f]), detector=d, material=kind)
+                np.testing.assert_allclose(actual, [[.2, -.1]], atol=1e-10)
+                np.testing.assert_equal(rods, [[ix, iy]])
+                np.testing.assert_allclose(back, local, atol=1e-10)
+
+    def test_new_front_inverse_uses_2500mm_and_material_group_index(self):
+        d = self.detector()
+        for kind in ('plastic', 'quartz'):
+            c, _, face = d.contract(kind)
+            for z in [0., 100., 1500., 2500.]:
+                xyz = np.array([2., 2., z-1250.])
+                world = rotation().T @ xyz
+                t = (world[2]-face[2]+c.n_group*1.02*(2500-z))/C_MM_NS
+                self.assertAlmostEqual(float(c.inverse(t, 1.02, 2., 2.)), z, places=9)
+
+    def test_reader_keeps_only_transported_material_exits_and_closes(self):
+        d, a = self.detector(), self.arrays()
+        a['OP_time_final'][4] = 0  # untransported birth record; poisoned analytic time ignored
+        a['OP_time_final'][5] = 50  # explicit acquisition gate, not a truth-dependent cut
+        for material, expected in [('plastic', [0, 1]), ('quartz', [2, 3, 6, 7])]:
+            c, _, _ = d.contract(material)
+            e, ids, truth, counts = corrected_event_from_arrays(a, c, detector=d, material=material)
+            np.testing.assert_equal(ids, expected)
+            np.testing.assert_allclose(truth['truth_z_mm'], 1250.)
+            self.assertEqual(counts['raw'], counts['selected']+counts['rejected'])
+            self.assertEqual(len(e.time_ns), len(expected))
+        self.assertEqual(counts['outside_gate'], 0)
+        c, _, _ = d.contract()
+        a['OP_productionRod'][0] = 46
+        with self.assertRaisesRegex(ValueError, 'outside source-defined sample'):
+            corrected_event_from_arrays(a, c, detector=d)
+
+    def test_rejects_wrong_replica_material_and_duplicate_track(self):
+        d = self.detector(); c, _, _ = d.contract()
+        a = self.arrays(); a['OP_trackid'][1] = a['OP_trackid'][0]
+        with self.assertRaisesRegex(ValueError, 'track identity'):
+            corrected_event_from_arrays(a, c, detector=d)
+        a = self.arrays(); a['OP_isCoreC'][2] = True
+        with self.assertRaisesRegex(ValueError, 'Ambiguous'):
+            corrected_event_from_arrays(a, c, detector=d)
+        a = self.arrays(); a['OP_productionFiber'][0] = 1
+        with self.assertRaisesRegex(ValueError, 'Downstream plane'):
+            corrected_event_from_arrays(a, c, detector=d)
+
+    def test_upstream_root_requires_producer_profile_ledger_before_io(self):
+        import os
+        from unittest.mock import patch
+        d = self.detector(); c, _, _ = d.contract()
+        with patch.dict(os.environ, SLURM_JOB_ID='fixture'):
+            with self.assertRaisesRegex(ValueError, 'exact DREAMSim'):
+                next(iter_corrected_root('nonexistent', 'b'*64, c, detector=d))
+
+    def test_source_pinned_root_extract_cache_and_cross_material_rejection(self):
+        import os
+        from unittest.mock import patch
+        try:
+            import awkward as ak
+            import uproot
+        except ImportError:
+            self.skipTest('Optional uproot/awkward not installed')
+        from dsipm.io import file_sha256
+        from studyDepthReconstruction import extract
+        d, a = self.detector(), self.arrays(40)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)/'fixture.root'; macro = Path(temp)/'run.mac'
+            macro.write_text(self.source_fixture()[1])
+            with uproot.recreate(root) as f:
+                columns = {k:ak.Array([v]) for k, v in a.items() if not k.startswith('OP_analytical')}
+                for name, value in zip(('beamX', 'beamY', 'beamZ'), d.gun_world_mm):
+                    columns[name] = np.array([value])
+                for name, value in zip(('beamPX', 'beamPY', 'beamPZ'), (0., 0., 10.)):
+                    columns[name] = np.array([value])
+                f['tree'] = columns
+            record = dict(root_sha256=file_sha256(root), detector_sha256=d.sha256,
+                producer_revision=d.revision, run_macro_sha256=file_sha256(macro))
+            ledger = Path(temp)/'producer.json'; ledger.write_text(json.dumps(record))
+            workflow = json.loads((Path(__file__).parents[1]/'sensor_workflow.json').read_text())
+            workflow['reference_scenario']['effective_pde'] = 1.
+            settings = Path(temp)/'sensor.json'; settings.write_text(json.dumps(workflow))
+            with patch.dict(os.environ, SLURM_JOB_ID='fixture'), patch.object(DreamsimDetector, 'from_checkout', return_value=d):
+                for kind in ('plastic', 'quartz'):
+                    output = Path(temp)/kind
+                    args = SimpleNamespace(input=str(root), sha256=record['root_sha256'], dreamsim='fixture',
+                        macro=str(macro), provenance=str(ledger), material=kind, output=str(output),
+                        workflow=str(settings), seed=20261022)
+                    extract(args)
+                    obs, c, truth, meta = load_cache(output)
+                    self.assertEqual(len(obs.time_ns), 2)
+                    self.assertEqual(c.length_mm, 2500.)  # not old geometry from sensor settings
+                    self.assertEqual(meta['provenance']['material'], kind)
+                    self.assertFalse(meta['provenance']['analytical_arrival_times_used'])
+                    self.assertFalse(meta['calibration_eligible'])
+                    np.testing.assert_equal(truth['truth_z_mm'], 1250.)
+                    other = d.contract('quartz' if kind == 'plastic' else 'plastic')[0]
+                    with self.assertRaisesRegex(ValueError, 'contract'):
+                        reconstruct(obs, calibration(other), c, method='radius')
+                bad = dict(record, detector_sha256='0'*64)
+                with self.assertRaisesRegex(ValueError, 'exact DREAMSim'):
+                    next(iter_corrected_root(root, record['root_sha256'], d.contract()[0], detector=d, provenance=bad))
 
 
 class IdealTransportTests(unittest.TestCase):

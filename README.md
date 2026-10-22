@@ -3,6 +3,9 @@
 A small, NumPy-based core for sensor response and timing-based fiber-depth
 reconstruction. It reads existing photons; it does not generate new showers.
 The original main-branch scripts are left untouched as legacy references.
+For new upstream DREAMSim ROOT files, the detector definition comes from the
+producer's committed source and actual run macro, not the historical CPAD
+constants or an independently tuned dSiPM geometry.
 
 ## Core
 
@@ -44,8 +47,8 @@ z = (n_group kappa L + a_x x + a_y y + b - c t) / (n_group kappa - a_z)
 
 kappa is optical path / axial distance, not a measured quantity. Phase indices
 set the ideal guidance bound; the independent group index sets flight time.
-Default assumptions are L=2000 mm, core/outer radii=0.39/0.40 mm and indices 1.49/1.42,
-not the supplied simplified study's 1.504 model. There is no implicit universal
+Standalone/historical defaults are L=2000 mm, core/outer radii=0.39/0.40 mm and
+indices 1.49/1.42. They are **not** the current upstream detector. There is no implicit universal
 effective index for the optional historical fixed-path comparison.
 
 The core and cladding boundary must remain distinct. The source audit corrected
@@ -59,6 +62,72 @@ the workflow's sensor values/hash; this returns the contract, entrance time
 and entrance point. World-to-calorimeter is Ry @ Rx for the pinned two-degree
 rotations. Depth is calo_z+1000, not the historical doubled scale. Coordinates,
 fiber containment, replica limits and the downstream plane are checked.
+
+## Current upstream detector: DREAMSim is the authority
+
+Use `geometry.DreamsimDetector.from_checkout(checkout, actual_run_macro)` for
+new upstream files. It reads the committed detector/material/placement source
+and run parameters, pins the full source revision and file hashes, and rejects
+uncommitted source changes, overlapping fibers, unsupported source forms,
+nonconstant refractive-index tables and unsupported beam configurations.
+It does not execute or modify C++ or silently fit missing group indices.
+
+The upstream model currently has a 2500 mm length, 90 rods by 80 layers at
+4 mm pitch, 0.39/0.40 mm core/outer radii, two plastic Cherenkov fibers with
+constant core index 1.504, two quartz fibers with index 1.468, and three
+scintillation fibers. The Cherenkov cladding index is 1.42. Group index equals
+phase index **only because these producer tables are verified constant**.
+Scintillation reconstruction is not implemented or claimed.
+
+`detector.contract('plastic')` and `detector.contract('quartz')` return separate
+contracts, entrance clocks and entrance points. Length, indices, fiber identity,
+replica dimensions, rotation, beam front and explicit sample-rod scope are
+source-derived. Sensor PDE/pitch/recovery may come from `sensor_workflow.json`;
+its historical geometry block never overrides this producer definition. Do
+not change the locked historical workflow or reuse its calibrations as an
+upstream calibration. Source profile/material/gate/workflow changes invalidate
+calibration compatibility automatically.
+
+Upstream `020d84c` contains overlapping quartz/scintillation placements. The
+reader rejects that source rather than compensating in Python. The isolated
+DREAMSim correction restores the quartz copy-2 y sign to the slot indicated
+by the adjacent commented placement and previous geometry: **one line in one
+C++ file**. No detector redesign, tracking-window enlargement or transport
+rewrite is part of this migration.
+
+Only one configured rod/layer is explicitly tracked upstream. Other optical
+records carry birth/analytical information, not measured sensor arrivals.
+The new reader uses **only recorded downstream Cherenkov-core exits**, never
+`OP_analyticalArrivalTime_*`. It separates plastic and quartz, cross-checks
+endpoint localization against exported replica IDs, preserves original photon
+IDs, and accounts separately for unrecorded, non-downstream, outside-gate and
+selected records. It must not be described as all-detector optical performance.
+
+Run extraction under Slurm with a producer ledger binding `root_sha256`,
+`producer_revision`, `detector_sha256` and `run_macro_sha256` to the actual
+source and run configuration. Any command-line geometry/beam/sampling overrides
+must be reflected in that run macro/profile. Current upstream does not export
+rotation branches, so the rotation is pinned by this producer ledger and run
+macro, not falsely reported as independently measured in each ROOT event.
+Exported beam position/direction are checked; rotation branches are checked too
+if a future schema supplies them.
+
+```bash
+python studyDepthReconstruction.py extract \
+  --input fresh.root --sha256 ROOT_SHA256 \
+  --dreamsim /path/to/clean/DREAMSim --macro actual_run.mac \
+  --provenance producer.json --material plastic --output plastic_cache
+# Repeat with --material quartz and a different output directory.
+```
+
+The resulting immutable caches feed the existing `calibrate` and `scan` tools
+without a new estimator implementation. Truth remains separate from measured
+observations. Optical-path truth is not declared validated: a source migration
+and a geometry fix do not establish that late-photon transport is correct.
+The old `reduceDepthCampaign.py` CPAD reduction and old fixed-2000-mm comparison
+plans remain historical entry points; do not feed new-model ROOTs into them.
+
+## Depth estimators
 
 Three estimators share exactly the same accepted photons:
 

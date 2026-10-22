@@ -5,16 +5,56 @@ See README.md. Raw TTU ROOT extraction has a separate
 Slurm-only adapter. ``scan`` never tunes on the held-out evaluation input.
 """
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 import subprocess
 
 import numpy as np
 
-from dsipm.io import load_cache, file_sha256
+from dsipm.io import load_cache, save_cache, file_sha256, iter_corrected_root
+from dsipm.geometry import DreamsimDetector
 from dsipm.depth import Calibration, fit_calibration, fit_timing_calibration, reconstruct
-from dsipm.sensors import smear_observations
-from dsipm.depth import evaluate, response_matrix
+from dsipm.sensors import make_observations, smear_observations
+from dsipm.depth import DepthContract, PhotonObservations, evaluate, response_matrix
+
+
+def extract(args):
+    """Source-pinned upstream ROOT -> one immutable, material-specific cache.
+
+    No simulation, submission, fitting, analytical-time substitution or retuning.
+    ROOT iteration is Slurm-only. The run ledger must bind the output hash to
+    its source profile and actual parameter macro (including any overrides).
+    """
+    detector = DreamsimDetector.from_checkout(args.dreamsim, args.macro)
+    metadata = json.loads(Path(args.provenance).read_text())
+    if metadata.get('run_macro_sha256') != file_sha256(args.macro):
+        raise ValueError('Actual producer macro/provenance mismatch')
+    reference = DepthContract.from_workflow(args.workflow)
+    contract, entrance, _ = detector.contract(args.material, pde=reference.pde,
+        pitch_um=reference.pitch_um, recovery_ns=reference.recovery_ns, workflow_sha256=reference.workflow_sha256)
+    # The workflow supplies sensor settings, NEVER upstream geometry/materials.
+    batches, labels, rows = [], [], []
+    for key, (event, ids, truth, counts) in iter_corrected_root(args.input, args.sha256, contract,
+            detector=detector, material=args.material, provenance=metadata):
+        batch = make_observations(event, key, contract, entrance_time_ns=entrance,
+            photon_ids=ids, seed=args.seed)
+        batches.append(batch.photons)
+        labels.append(truth['truth_z_mm'][batch.accepted_indices])
+        rows.append(dict(event_key=key, transport=counts, sensor=batch.counts))
+    if not batches or not sum(len(b.time_ns) for b in batches):
+        raise ValueError('No accepted transported photons for this material; no cache created')
+    photons = PhotonObservations(**{k:np.concatenate([getattr(b, k) for b in batches])
+                                   for k in PhotonObservations.__dataclass_fields__})
+    save_cache(args.output, photons, contract, truth_z_mm=np.concatenate(labels),
+        calibration_eligible=False, provenance=dict(
+            detector=asdict(detector), detector_sha256=detector.sha256, material=args.material,
+            source_root_sha256=args.sha256, producer=metadata, sensor_seed=args.seed,
+            timestamp_sigma_ns=0, entrance_time_ns=entrance, optical_transport_validated=False,
+            truth_z_validation='source-profile endpoint/replica/core/depth containment; not exact birth-time truth',
+            scope='one configured sample rod/layer; recorded downstream Cherenkov-core exits only',
+            analytical_arrival_times_used=False, records=rows))
+    print('EXTRACTED', args.material, len(rows), len(photons.time_ns), contract.sha256)
 
 
 def calibrate(args):
@@ -313,6 +353,14 @@ def plot_campaign(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="mode", required=True)
+    raw = sub.add_parser('extract', help='Slurm-only upstream ROOT extraction, deriving detector from DREAMSim source')
+    raw.add_argument('--input', required=True); raw.add_argument('--sha256', required=True)
+    raw.add_argument('--dreamsim', required=True); raw.add_argument('--macro', required=True)
+    raw.add_argument('--provenance', required=True, help='Producer ledger binding ROOT/source-profile/macro hashes')
+    raw.add_argument('--material', required=True, choices=['plastic', 'quartz'])
+    raw.add_argument('--workflow', default=str(Path(__file__).parent/'sensor_workflow.json'))
+    raw.add_argument('--seed', type=int, default=20261022); raw.add_argument('--output', required=True)
+    raw.set_defaults(run=extract)
     cal = sub.add_parser("calibrate")
     cal.add_argument("--input", required=True); cal.add_argument("--output", required=True)
     cal.add_argument("--min-count", type=int, default=20)

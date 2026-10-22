@@ -5,13 +5,190 @@ or prototype simulations. Projection inputs use the legacy rod-centred frame;
 the raw reader uses the explicitly pinned physical world-to-calo transform.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import IntEnum
+import hashlib
+from pathlib import Path
+import re
+import subprocess
 import numpy as np
-from .depth import C_MM_NS, DepthContract
+from .depth import C_MM_NS, DepthContract, digest
 
 FIBER_OFFSETS_MM = np.array([[0., 0.], [.81*np.cos(np.pi/6), .405],
                              [-.81*np.cos(np.pi/6), .405], [0., -.81]])
+
+
+@dataclass(frozen=True)
+class DreamsimDetector:
+    """Source-derived upstream detector, not a second independently tuned model.
+
+    Only the current constant-index, seven-fiber replica geometry and fixed
+    world-z gun are supported. Unsupported source forms fail closed. A new
+    source revision, material, placement, beam or sampling scope changes the
+    contract identity. This is software provenance, not transport certification.
+    """
+    revision: str
+    source_hashes: tuple
+    length_mm: float
+    rod_pitch_mm: float
+    n_rods: int
+    n_layers: int
+    hole_radius_mm: float
+    core_radius_mm: float
+    outer_radius_mm: float
+    fibers: tuple  # (plastic/quartz/scintillation, copy number, x_mm, y_mm)
+    indices: tuple  # (material, constant core index, constant cladding index)
+    rotation_deg: tuple
+    gun_world_mm: tuple
+    sample_rod_layer: tuple
+
+    def __post_init__(self):
+        if not re.fullmatch('[0-9a-f]{40}', self.revision):
+            raise ValueError('Need the full DREAMSim source revision')
+        if (not self.source_hashes or len(dict(self.source_hashes)) != len(self.source_hashes)
+                or any(not re.fullmatch('[0-9a-f]{64}', h) for _, h in self.source_hashes)):
+            raise ValueError('Need unique source-file hashes')
+        numeric = [self.length_mm, self.rod_pitch_mm, self.hole_radius_mm,
+                   self.core_radius_mm, self.outer_radius_mm, *self.rotation_deg, *self.gun_world_mm]
+        if (not np.isfinite(numeric).all() or min(numeric[:5]) <= 0 or
+                not 0 < self.core_radius_mm <= self.outer_radius_mm < self.hole_radius_mm or
+                any(not isinstance(n, int) or n <= 0 or n % 2 for n in (self.n_rods, self.n_layers)) or
+                len(self.rotation_deg) != 2 or len(self.gun_world_mm) != 3 or
+                len(self.sample_rod_layer) != 2 or any(not isinstance(n, int) for n in self.sample_rod_layer) or
+                not (0 <= self.sample_rod_layer[0] < self.n_rods and 0 <= self.sample_rod_layer[1] < self.n_layers)):
+            raise ValueError('Invalid upstream detector dimensions or sampling scope')
+        if len(self.fibers) != 7 or len({(f[0], f[1]) for f in self.fibers}) != 7:
+            raise ValueError('Need seven distinct material/copy identities')
+        expected = {'plastic': {0, 1}, 'quartz': {2, 3}, 'scintillation': {1, 2, 3}}
+        if any({f[1] for f in self.fibers if f[0] == k} != v for k, v in expected.items()):
+            raise ValueError('Unsupported DREAMSim fiber material/copy layout')
+        xy = np.asarray([f[2:] for f in self.fibers], float)
+        if not np.isfinite(xy).all() or np.any(np.linalg.norm(xy, axis=1)+self.outer_radius_mm > self.hole_radius_mm+1e-9):
+            raise ValueError('Fiber outside source-defined rod hole')
+        distance = np.linalg.norm(xy[:, None]-xy[None, :], axis=2)
+        if np.any(distance[np.triu_indices(7, 1)] < 2*self.outer_radius_mm-1e-9):
+            raise ValueError('Overlapping DREAMSim fiber placements; fix the producer, not the reader')
+        if {i[0] for i in self.indices} != set(expected) or len(self.indices) != 3:
+            raise ValueError('Missing material optics')
+        if any(not np.isfinite([n, c]).all() or not n > c > 0 for _, n, c in self.indices):
+            raise ValueError('Invalid source material indices')
+
+    @property
+    def sha256(self):
+        return digest(asdict(self))
+
+    @classmethod
+    def from_checkout(cls, checkout, macro=None):
+        """Read a clean committed DREAMSim tree and the actual run-parameter macro.
+
+        This does not compile or execute C++. A macro outside the checkout is
+        allowed as a run input; the caller records its separate full hash.
+        """
+        root = Path(checkout)
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
+        if git('status', '--porcelain', '--untracked-files=no'):
+            raise ValueError('Commit DREAMSim source changes before deriving a detector')
+        paths = ['sim/src/CaloXDetectorConstruction.cc', 'sim/src/CaloXSteppingAction.cc',
+                 'sim/src/CaloXTree.cc', 'sim/src/CaloXPrimaryGeneratorAction.cc']
+        sources = {p: (root/p).read_text() for p in paths}
+        run_macro = root/'sim/paramBatch03_single.mac' if macro is None else Path(macro)
+        return cls.from_sources(git('rev-parse', 'HEAD'), sources, run_macro.read_text())
+
+    @classmethod
+    def from_sources(cls, revision, sources, macro):
+        """Parse the supported source form; fixtures can exercise the same parser.
+
+        No eval, C++ execution, guessed defaults, or dispersion-to-constant fit.
+        A changed source form requires an explicit reader review.
+        """
+        clean = lambda s: re.sub(r'/\*.*?\*/|//[^\n]*', '', s, flags=re.S)
+        g = clean(sources['sim/src/CaloXDetectorConstruction.cc'])
+        step = clean(sources['sim/src/CaloXSteppingAction.cc'])
+        def one(pattern, text=g):
+            matches = re.findall(pattern, text, re.S)
+            if len(matches) != 1:
+                raise ValueError('Unsupported/ambiguous DREAMSim source: '+pattern)
+            return matches[0]
+        number = r'([0-9]+(?:\.[0-9]*)?|\.[0-9]+)'
+        def scalar(name, unit=None):
+            return float(one(r'double\s+'+name+r'\s*=\s*'+number+
+                             (r'\s*\*\s*'+unit if unit else '')+r'\s*;'))
+        length, pitch = 10*scalar('fiberLength', 'cm'), 10*scalar('rodSize', 'cm')
+        nr, nl = scalar('noRods'), scalar('noLayers')
+        if nr != int(nr) or nl != int(nl):
+            raise ValueError('Nonintegral replica count')
+        radius = scalar('clad_Plastic_rMax', 'mm')
+        core = scalar('core_Plastic_rMax', 'mm')
+        if scalar('clad_S_rMax', 'mm') != radius or scalar('core_S_rMax', 'mm') != core:
+            raise ValueError('Unsupported unequal source fiber radii')
+        if 'fiberCoreQuartzLog = new G4LogicalVolume(fiberC,' not in g:
+            raise ValueError('Quartz must use the source-defined Cherenkov solid')
+        spacing = radius*float(one(r'double\s+R\s*=\s*clad_Plastic_rMax\s*\*\s*'+number+r'\s*\+\s*[0-9.]+\s*;'))
+        spacing += float(one(r'double\s+R\s*=\s*clad_Plastic_rMax\s*\*\s*[0-9.]+\s*\+\s*'+number+r'\s*;'))
+        if not (re.search(r'double\s+cx1\s*=\s*R\s*\*\s*cos\(30\.0\s*\*\s*deg\)', g) and
+                re.search(r'double\s+cy1\s*=\s*R\s*\*\s*sin\(30\.0\s*\*\s*deg\)', g)):
+            raise ValueError('Unsupported fiber-ring definition')
+        symbols = dict(R=spacing, cx1=spacing*np.cos(np.pi/6), cy1=spacing*.5)
+        def coordinate(token):
+            token = token.strip()
+            sign = -1 if token.startswith('-') else 1
+            token = token.lstrip('+-').strip()
+            if token in symbols:
+                return float(sign*symbols[token])
+            if re.fullmatch(r'[0-9]+\.?[0-9]*', token):
+                return sign*float(token)
+            raise ValueError('Unsupported fiber coordinate: '+token)
+        fibers = []
+        for xyz, logical, copy in re.findall(
+                r'new G4PVPlacement\(0,\s*G4ThreeVector\(([^)]+)\),\s*(fiberPlasticLog|fiberQuartzLog|fiberSLog),'
+                r'\s*"[^"]+",\s*holeLV,\s*false,\s*(\d+),\s*fCheckOverlaps\)', g):
+            x, y, z = [coordinate(t) for t in xyz.split(',')]
+            if z != 0:
+                raise ValueError('Unsupported longitudinal fiber offset')
+            kind = {'fiberPlasticLog':'plastic', 'fiberQuartzLog':'quartz', 'fiberSLog':'scintillation'}[logical]
+            fibers.append((kind, int(copy), x, y))
+        def index(name):
+            match = re.search(r'G4double\s+RefractiveIndex_'+name+r'\[nEntries\]\s*=\s*\{([^}]+)\}', g)
+            if match:
+                values = [float(v.strip()) for v in match[1].split(',') if v.strip()]
+                if not values or len(set(values)) != 1:
+                    raise ValueError('Dispersive material needs an explicit group-index model')
+                return values[0]
+            return float(one(r'std::fill_n\(RefractiveIndex_'+name+r',\s*nEntries,\s*'+number+r'\)'))
+        optics = (('plastic', index('PMMA'), index('FluorinatedPolymer')),
+                  ('quartz', index('FusedSilica'), index('HardPolymer')),
+                  ('scintillation', index('Polystyrene'), index('PMMA')))
+        params = dict(re.findall(r'^#\$\$\$\s+(\w+)\s+(\S+)', macro, re.M))
+        def parameter(name):
+            if name not in params:
+                raise ValueError('Run macro must explicitly define '+name)
+            return float(params[name])
+        gun = []
+        for axis in 'xyz':
+            lo, hi = parameter('gun_'+axis+'_min'), parameter('gun_'+axis+'_max')
+            if lo != hi or parameter('pMomentum_'+axis+'_min') != (1 if axis == 'z' else 0) or parameter('pMomentum_'+axis+'_max') != (1 if axis == 'z' else 0):
+                raise ValueError('Only a fixed world-z beam front is implemented')
+            gun.append(10*lo)
+        sample = [parameter('opSampleRod'), parameter('opSampleLayer')]
+        if any(v != int(v) for v in sample):
+            raise ValueError('Nonintegral sampling rod/layer')
+        if not re.search(r'isSampleRod\s*=\s*\(rodNumber\s*==\s*opSampleRod\s*&&\s*layerNumber\s*==\s*opSampleLayer\)', step):
+            raise ValueError('Unsupported upstream explicit-optical scope')
+        return cls(revision, tuple(sorted((p, hashlib.sha256(s.encode()).hexdigest()) for p, s in sources.items())),
+            length, pitch, int(nr), int(nl), 5*scalar('holeDiameter', 'cm'), core, radius,
+            tuple(fibers), optics, (parameter('caloRotationX'), parameter('caloRotationY')),
+            tuple(gun), tuple(int(v) for v in sample))
+
+    def contract(self, material='plastic', **sensor_options):
+        return dreamsim_front_contract(detector=self, material=material, **sensor_options)
+
+    def check_contract(self, contract, material):
+        expected, _, _ = self.contract(material)
+        for name in ('geometry_id', 'length_mm', 'core_radius_mm', 'fiber_outer_radius_mm',
+                     'n_phase', 'n_group', 'n_clad', 'front_x', 'front_y', 'front_z', 'front_offset_mm'):
+            if getattr(contract, name) != getattr(expected, name):
+                raise ValueError('DREAMSim source/material contract mismatch: '+name)
 
 
 def rotation(x_deg=2., y_deg=2.):
@@ -29,24 +206,37 @@ def world_to_calorimeter(points_mm, *, x_deg=2., y_deg=2.):
     return p @ rotation(x_deg, y_deg).T
 
 
-def localize_endpoints(points_world_mm, fiber, *, x_deg=2., y_deg=2.):
+def localize_endpoints(points_world_mm, fiber, *, x_deg=2., y_deg=2., detector=None, material='plastic'):
+    """Historical CPAD geometry by default; upstream requires its source profile."""
+    if detector is not None:
+        x_deg, y_deg = detector.rotation_deg
     calo = world_to_calorimeter(points_world_mm, x_deg=x_deg, y_deg=y_deg)
     f = np.asarray(fiber)
     if f.shape != (len(calo),) or f.dtype.kind not in "iu" or np.any((f < 0) | (f > 3)):
         raise ValueError("Invalid fiber identity")
-    offset = FIBER_OFFSETS_MM[f]
-    rod = 4*np.rint((calo[:, :2]-offset-2)/4)+2
+    if detector is None:
+        offsets, pitch, halfz, radius, nx, ny = FIBER_OFFSETS_MM, 4., 1000., .4, 90, 80
+    else:
+        by_id = {i: (x, y) for kind, i, x, y in detector.fibers if kind == material}
+        if material not in ('plastic', 'quartz') or not np.isin(f, list(by_id)).all():
+            raise ValueError('Fiber identity does not belong to selected material')
+        offsets = np.zeros((4, 2))
+        for i, xy in by_id.items(): offsets[i] = xy
+        pitch, halfz, radius = detector.rod_pitch_mm, detector.length_mm/2, detector.outer_radius_mm
+        nx, ny = detector.n_rods, detector.n_layers
+    offset = offsets[f]
+    rod = pitch*np.rint((calo[:, :2]-offset-pitch/2)/pitch)+pitch/2
     local = calo[:, :2]-offset-rod
-    index = np.rint((rod-2)/4).astype(np.int64)
-    if (np.any(abs(calo[:, 2]-1000) > 1e-4) or np.any(np.linalg.norm(local, axis=1) > .40001) or
-            np.any(index[:, 0] < -45) or np.any(index[:, 0] > 44) or
-            np.any(index[:, 1] < -40) or np.any(index[:, 1] > 39)):
+    index = np.rint((rod-pitch/2)/pitch).astype(np.int64)
+    if (np.any(abs(calo[:, 2]-halfz) > 1e-4) or np.any(np.linalg.norm(local, axis=1) > radius+1e-5) or
+            np.any(index[:, 0] < -nx//2) or np.any(index[:, 0] >= nx//2) or
+            np.any(index[:, 1] < -ny//2) or np.any(index[:, 1] >= ny//2)):
         raise ValueError("Downstream plane, fiber radius or rod limits mismatch")
     ids = ((index[:, 0]+2048) << 16) | ((index[:, 1]+2048) << 2) | f
     return local, rod+offset, index, ids, calo
 
 
-def dreamsim_front_contract(*, gun_world_mm=(25., -25., -1050.), x_deg=2., y_deg=2., **sensor_optics):
+def dreamsim_front_contract(*, gun_world_mm=None, x_deg=2., y_deg=2., detector=None, material='plastic', **sensor_optics):
     """Prompt world-z beam front and exact entrance time for pinned geometry.
 
     front time uses SENSOR CENTRES in the physical calo frame, an explicitly
@@ -54,18 +244,35 @@ def dreamsim_front_contract(*, gun_world_mm=(25., -25., -1050.), x_deg=2., y_deg
     off-axis/slow shower secondary need not lie on this beta=1 plane.
     Returns (contract, entrance_time_ns, entrance_world_mm).
     """
+    halfz = 1000.
+    if detector is not None:
+        if gun_world_mm is not None:
+            raise ValueError('The run macro, not the reader, defines the upstream beam')
+        if material not in ('plastic', 'quartz'):
+            raise ValueError('Depth inference currently supports plastic or quartz Cherenkov cores only')
+        x_deg, y_deg = detector.rotation_deg
+        gun_world_mm, halfz = detector.gun_world_mm, detector.length_mm/2
+        _, ncore, nclad = next(i for i in detector.indices if i[0] == material)
+        values = dict(length_mm=detector.length_mm, core_radius_mm=detector.core_radius_mm,
+            fiber_outer_radius_mm=detector.outer_radius_mm, n_phase=ncore, n_group=ncore, n_clad=nclad)
+        if any(k in sensor_optics and sensor_optics[k] != v for k, v in values.items()):
+            raise ValueError('DREAMSim defines geometry/optics; do not override them in dSiPM')
+        sensor_optics.update(values)
+    elif gun_world_mm is None:
+        gun_world_mm = (25., -25., -1050.)
     r = rotation(x_deg, y_deg)
     gun = np.asarray(gun_world_mm, float)
     if gun.shape != (3,) or not np.isfinite(gun).all() or r[2, 2] <= 0:
         raise ValueError("Invalid world-z beam front")
-    distance = (-1000.-(r @ gun)[2])/r[2, 2]
+    distance = (-halfz-(r @ gun)[2])/r[2, 2]
     if distance < 0:
         raise ValueError("Gun must precede entrance plane")
     face = gun+np.array([0., 0., distance])
     contract = DepthContract(front_z=float(r[2, 2]), front_x=float(r[0, 2]), front_y=float(r[1, 2]),
-        front_offset_mm=float(-r[2, 2]*1000-face[2]),
-        geometry_id=f"DREAMSim-54b2447-RyRx-{x_deg:g}-{y_deg:g}-worldZ-front-v1", **sensor_optics)
-    if (contract.length_mm != 2000. or contract.core_radius_mm != .39 or
+        front_offset_mm=float(-r[2, 2]*halfz-face[2]),
+        geometry_id=(f'DREAMSim-source-{detector.sha256}-{material}-worldZ-front-v2' if detector else
+                     f"DREAMSim-54b2447-RyRx-{x_deg:g}-{y_deg:g}-worldZ-front-v1"), **sensor_optics)
+    if detector is None and (contract.length_mm != 2000. or contract.core_radius_mm != .39 or
             contract.fiber_outer_radius_mm != .4):
         raise ValueError("Pinned DREAMSim geometry is L=2000 mm, core radius=0.39 mm, outer radius=0.40 mm")
     return contract, float(distance/C_MM_NS), face
