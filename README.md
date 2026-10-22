@@ -12,7 +12,9 @@ dsipm/
   sensors.py    FLASH holdoff, analog recharge, matched clocks, readout/pulse proxies
   depth.py      model contract, calibration, reconstruction, truth-based evaluation
   io.py         immutable caches and hash-checked, Slurm-only existing-ROOT reader
-studyDepthReconstruction.py   one analysis entry point: calibrate / scan
+studyDepthReconstruction.py   compact-cache entry point: calibrate / scan / plot
+reduceDepthCampaign.py       Slurm-only complete-campaign baseline reduction / merge
+compareDepthCorrections.py   pion-only, held-out depth methods and empirical controls
 sensor_workflow.json         one canonical sensor configuration
 tests/                      focused physics and end-to-end regressions
 ```
@@ -42,9 +44,13 @@ z = (n_group kappa L + a_x x + a_y y + b - c t) / (n_group kappa - a_z)
 
 kappa is optical path / axial distance, not a measured quantity. Phase indices
 set the ideal guidance bound; the independent group index sets flight time.
-Default assumptions are L=2000 mm, core radius=0.4 mm and indices 1.49/1.42,
+Default assumptions are L=2000 mm, core/outer radii=0.39/0.40 mm and indices 1.49/1.42,
 not the supplied simplified study's 1.504 model. There is no implicit universal
 effective index for the optional historical fixed-path comparison.
+
+The core and cladding boundary must remain distinct. The source audit corrected
+the earlier 0.40 mm core assumption; the v2 algorithm/contract rejects old
+calibration tables rather than silently reusing their radius normalization.
 
 `DepthContract.from_workflow()` loads canonical PDE/pitch/holdoff and pins the
 complete configuration hash. It also accepts a workflow JSON **path**. For the
@@ -70,11 +76,60 @@ unphysical distance is clipped into the detector. A tiny endpoint-roundoff
 tolerance is not a boundary-repair procedure. Near-face direct exits do not
 require TIR before a wall they never encounter.
 
-`fit_calibration(observations, kappa_truth, contract, source_sha256=...)` is the
-only estimator input taking truth. Inference rejects overlapping calibration
+`fit_calibration(observations, kappa_truth, contract, source_sha256=...)` fits
+validated geometric path factors. Separately, `fit_timing_calibration` (or its
+streaming batch variant) fits an **effective timing factor** from measured
+arrival time and geometry-checked production Z, using the exact inverse model:
+
+```text
+kappa_eff = (c*t - a_z*z_true - a_x*x - a_y*y - b) / (n_group*(L-z_true))
+```
+
+This needs neither photon direction nor exact creation time. It absorbs emission
+front mismatch, mixed propagation speeds and timestamp noise; it is **not**
+geometric path truth or a repair of transport physics. Finite factors below one
+(even negative factors under noise) are retained. Undefined Z=L calibration
+labels are counted, never used to remove evaluation photons. The geometric
+TIR guidance remains the default for geometric calibrations; timing-effective
+models default to physical-Z-range checks only. An explicit geometric-guidance
+variant tests that upper-bound heuristic without asserting it is a physical
+constraint on an effective coefficient.
+
+Inference rejects overlapping calibration
 and evaluation events and mismatched geometry, optics, workflow, gate or sensor
-models. Hold out tuning events as well; never choose cuts/windows on final test
+models. Photon jitter and entrance-clock jitter must match the calibration's
+recorded training values. Only an explicit `allow_jitter_mismatch` override
+permits a fixed-calibration robustness study. Hold out tuning events as well;
+never choose cuts/windows on final test
 scores. Defaults are development assumptions, not an optimized performance.
+
+The original `compareDepthCorrections.py --compare` study directly calibrated conditional medians of geometry-checked
+production Z, not kappa: measured time, then pixel exit radius, same-rod arrival
+delay, and other-rod timing in a 5x5 window. Five source-file folds keep every
+evaluation event out of its model's training. Feature bins/support thresholds
+are fixed before evaluation; all methods retain identical accepted photons and
+matched 0/50/200/500 ps jitter, with fixed zero-jitter training. Sparse cells
+explicitly fall back to less detailed models. A no-timing depth-prior control
+is mandatory: direct conditional estimates are physical by construction, not
+because they solve a validated optical inverse. These are sample-specific,
+empirical development comparisons, not proof of optical-path correction or
+energy-deposition resolution. Paired file-bootstrap errors condition on the
+fitted crossfit maps; they exclude refit and transport/model uncertainties.
+It is an empirical control, **not** a test of corrections 1-3. The new
+`--method-task` / `--method-merge` comparison invokes the actual `reconstruct`
+radius, radius-delay and neighbour methods on the same 5,000 pion events. It
+refits both the effective-factor calibration and empirical controls separately
+at each timing sigma, with five whole-source-file holdouts. It also reports a
+global-factor reference, range-only versus geometric-guidance ablations, and a
+no-timing prior. Radius bins resolve 0.9, 0.95 and 0.975 and retain outer-fiber
+pixel observations. Grouped sorting replaces repeated full-array bin masks.
+
+Headline metrics are failure-inclusive fractions within 5/10/20 cm and the
+absolute-error tolerance containing 68% of all accepted photons. Failed returns
+have infinite error in this CDF; that tolerance is undefined/unreachable if
+too many photons fail. A failed estimate has no signed residual or finite RMS
+without an explicitly declared penalty. Conditional residual widths remain
+labeled diagnostics, never substitutes for all-photon performance.
 
 ## Data and matched scans
 
@@ -97,11 +152,15 @@ an exit-direction proxy or transport-bug-derived path factor as validated truth.
 The raw reader requires Slurm and checks complete ROOT hashes before/after an
 exhausted read. Check the validated sidecar/production manifest upstream too.
 
-After preparing disjoint, validated caches with `timestamp_sigma_ns=0`:
+After preparing disjoint caches with `timestamp_sigma_ns=0` and documented
+`truth_z_validation` in the calibration cache provenance:
 
 ```bash
-python studyDepthReconstruction.py calibrate --input calibration_cache --output calibration.json
-python studyDepthReconstruction.py scan --input heldout_cache --calibration calibration.json \
+for timing_sigma_ps in 0 50 200 500; do
+  python studyDepthReconstruction.py calibrate --input calibration_cache \
+    --factor-kind timing_effective --sigma-ps "$timing_sigma_ps" --output "cal_${timing_sigma_ps}.json"
+done
+python studyDepthReconstruction.py scan --input heldout_cache --calibration cal_0.json cal_50.json cal_200.json cal_500.json \
   --output results/depth-scan --sigmas-ps 0 50 200 500 --clock-ps 0
 ```
 
@@ -116,6 +175,57 @@ bootstrap intervals with depth-bin underflow/overflow accounting. Gate/PDE/
 holdoff losses are separate. Channel medians are accepted-photon truth medians,
 not energy-deposition truth. Local timing-only z-error contributions exclude
 path/emission ambiguity and are not total calibrated uncertainty intervals.
+
+Every evaluated scan also saves a true-Z/reconstructed-Z response matrix with
+explicit failure counts in each truth bin. True Z is horizontal, reconstructed
+Z vertical. Response-column normalization retains unreconstructed inputs.
+Optional plotting checks the cache/result hashes and original photon identities
+before writing individual square plots for response, residual versus truth,
+and inclusive success/failure versus truth (one PDF and PNG per plot):
+
+```bash
+python -m pip install matplotlib  # optional, not needed by the NumPy core
+python studyDepthReconstruction.py plot --input heldout_cache --run results/depth-scan \
+  --output results/depth-plots --method neighbour --sigma-ps 50 --label "pi+ 100 GeV"
+```
+
+Keep particle and energy samples separate. A plot of reconstructed versus true
+photon-production depth is the primary depth deliverable; arrival time versus
+truth is only a transport diagnostic. Neither establishes energy-deposition
+resolution or cures the unresolved optical-transport issue.
+
+`reduceDepthCampaign.py` is the Slurm-only existing-ROOT baseline driver for the
+complete pinned 40,000-event campaign. It evaluates **every accepted individual
+photon**, not selected channels or first hits. It preserves the same photons and
+noise draws across timing assumptions, records out-of-window photons separately,
+and closes incident = undetected + holdoff loss + accepted. Physical inversions
+and failures sum to all scored photons; residual histograms must also close.
+Per-source immutable products permit file-block uncertainties without exporting
+raw photons. The unfitted axial baseline scores all events; the historical fixed
+index baseline excludes its original 20 calibration events from scores only.
+Neither baseline is a trained path model or a certified final detector result.
+The plan pins the combined manifest, code hashes, reference table, timing scan,
+optics and calibration exclusions; use a new output directory for every new plan.
+Its `--merge NEW_CHECKPOINT` mode verifies every per-source hash, event identity,
+sensor-stage count and response/residual closure before publishing a checkpoint.
+It reports 500-draw source-file bootstrap intervals, separately by particle and
+energy. Those intervals describe statistical uncertainty only; they do not cover
+the unresolved transport model, path ambiguity or electronics assumptions.
+After this strict merge, `studyDepthReconstruction.py campaign-plot --input
+CHECKPOINT --plan all_photon_plan.json --output NEW_DIRECTORY --baseline axial
+--sigma-ps 50` writes three individual figures for every sample. It requires all
+40,000 events, checks the pinned plan and each histogram hash/closure before
+writing any plot, and records model and acquisition assumptions in each manifest.
+An additional accuracy-versus-timestamp-resolution figure compares both frozen
+baselines, with source-file statistical intervals and failed inversions retained
+in the denominator. The exported CSV contains all samples and resolution points.
+`reduceDepthCampaign.py --depth-support NEW_DIRECTORY --source-checkpoint CHECKPOINT
+--summary-sha256 SHA256` (with the same `--plan` and `--output`) uses only the
+hash-checked per-source aggregates to compute depth-bin file-bootstrap intervals.
+It records independent-file coverage and qualifies the within-10-cm rate only
+when at least 30 source files contribute and relative bootstrap error is <=5%.
+This is a display-precision flag, not an event/photon cut or a physics-validity
+certificate. Undefined or sparsely supported bins remain explicitly recorded.
 
 ## Comparison models and scope
 

@@ -494,7 +494,7 @@ def make_observations(event, event_key, contract, *, entrance_time_ns=0.,
     if ids.shape != (n,) or ids.dtype.kind not in "iu" or np.any(ids < 0) or len(np.unique(ids)) != n:
         raise ValueError("Need unique original integer photon IDs")
     x, y = arrays["local_x_mm"], arrays["local_y_mm"]
-    if np.any(np.hypot(x, y) > contract.core_radius_mm+1e-5):
+    if np.any(np.hypot(x, y) > contract.fiber_outer_radius_mm+1e-5):
         raise ValueError("Not physical fiber-local endpoints; check geometry")
     gate = (t > contract.gate_ns[0]) & (t < contract.gate_ns[1])
     pitch = contract.pitch_um/1000

@@ -1,6 +1,6 @@
 """Observable-only, single-ended fiber-depth inference (development model).
 
-Truth is accepted only by ``fit_calibration`` and the separate evaluation functions.
+Truth is accepted only by calibration helpers and separate evaluation functions.
 No estimator here is a validated detector resolution or a transport-bug fix.
 Units throughout are millimetres and nanoseconds; z=0 is the entrance face.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 C_MM_NS = 299.792458
-ALGORITHM_VERSION = "fiber-depth-v1"
+ALGORITHM_VERSION = "fiber-depth-v3-timing-calibration"
 
 
 def digest(value) -> str:
@@ -33,7 +33,8 @@ class DepthContract:
     absolute arrival time, BEFORE instrument jitter and entrance subtraction.
     """
     length_mm: float = 2000.0
-    core_radius_mm: float = 0.4
+    core_radius_mm: float = 0.39
+    fiber_outer_radius_mm: float = 0.4
     n_phase: float = 1.49
     n_clad: float = 1.42
     n_group: float = 1.49
@@ -54,7 +55,7 @@ class DepthContract:
         vals = [v for v in asdict(self).values() if isinstance(v, (float, int))]
         if not np.isfinite(vals).all():
             raise ValueError("Nonfinite contract")
-        if not (self.length_mm > 0 and self.core_radius_mm > 0 and
+        if not (self.length_mm > 0 and 0 < self.core_radius_mm <= self.fiber_outer_radius_mm and
                 self.n_phase > self.n_clad > 0 and self.n_group > abs(self.front_z)):
             raise ValueError("Invalid optical/front model")
         if not (self.pitch_um > 0 and 0 <= self.pde <= 1 and self.recovery_ns >= 0):
@@ -82,6 +83,10 @@ class DepthContract:
             raise ValueError("Unsupported sensor workflow")
         values = dict(pde=reference["effective_pde"], pitch_um=reference["spad_pitch_um"],
                       recovery_ns=reference["spad_recovery_ns"], workflow_sha256=hashlib.sha256(raw).hexdigest())
+        geometry = data.get("geometry", {})
+        for name in ("length_mm", "core_radius_mm", "fiber_outer_radius_mm", "n_phase", "n_clad", "n_group"):
+            if name in geometry:
+                values[name] = geometry[name]
         values.update(overrides)
         return cls(**values)
 
@@ -101,8 +106,9 @@ class DepthContract:
 
     def inverse(self, time_ns, kappa, x_mm=0.0, y_mm=0.0):
         nk = self.n_group * np.asarray(kappa)
-        return (nk*self.length_mm + self.front_x*x_mm + self.front_y*y_mm + self.front_offset_mm
-                - C_MM_NS*np.asarray(time_ns)) / (nk-self.front_z)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return (nk*self.length_mm + self.front_x*x_mm + self.front_y*y_mm + self.front_offset_mm
+                    - C_MM_NS*np.asarray(time_ns)) / (nk-self.front_z)
 
     def kappa_bound(self, radius):
         """Ideal-cylinder TIR bound; NOT a path measurement or loss correction."""
@@ -181,14 +187,17 @@ class Calibration:
 
     def __post_init__(self):
         p = self.payload
-        if p["algorithm"] != ALGORITHM_VERSION:
+        kind = p.get('factor_kind', 'geometric_path')
+        if (p["algorithm"] not in (ALGORITHM_VERSION,"fiber-depth-v2-core-radius") or
+                kind not in ('geometric_path','timing_effective') or
+                (p['algorithm']=='fiber-depth-v2-core-radius' and kind!='geometric_path')):
             raise ValueError("Calibration algorithm mismatch")
         DepthContract(**p["contract"])
         if p["contract_sha256"] != digest(p["contract"]):
             raise ValueError("Corrupt calibration contract")
         re, de, qs = [np.asarray(p[k], float) for k in ("radius_edges", "delay_edges_ns", "quantiles")]
         if (any(a.ndim != 1 or not np.isfinite(a).all() for a in (re, de, qs)) or
-                len(re) < 2 or re[0] != 0 or re[-1] != 1 or np.any(np.diff(re) <= 0) or
+                len(re) < 2 or re[0] != 0 or re[-1] < 1 or (kind=='geometric_path' and re[-1]!=1) or np.any(np.diff(re) <= 0) or
                 len(de) < 2 or de[0] != 0 or np.any(np.diff(de) <= 0) or
                 len(qs) != 10 or not np.allclose(qs, np.linspace(.05, .95, 10), rtol=0, atol=1e-14)):
             raise ValueError("Malformed calibration bins/quantiles")
@@ -196,7 +205,7 @@ class Calibration:
         for name, shape in [("radius_median", (nr,)), ("joint_median", (nr, nt)),
                             ("joint_quantiles", (nr, nt, nq))]:
             a = np.asarray(p[name])
-            if a.shape != shape or not np.isfinite(a).all() or np.any(a < 1):
+            if a.shape != shape or not np.isfinite(a).all() or (kind=='geometric_path' and np.any(a < 1)):
                 raise ValueError(f"Malformed calibration {name}")
         if np.any(np.diff(np.asarray(p["joint_quantiles"]), axis=-1) < 0):
             raise ValueError("Unordered kappa quantiles")
@@ -204,6 +213,11 @@ class Calibration:
             raise ValueError("Empty or malformed calibration event identities")
         if p["min_count"] < 1 or not np.isfinite(p["training_sigma_ns"]) or p["training_sigma_ns"] < 0:
             raise ValueError("Malformed calibration metadata")
+        if not np.isfinite(p.get('training_entrance_sigma_ns',0)) or p.get('training_entrance_sigma_ns',0)<0:
+            raise ValueError('Malformed calibration entrance-clock uncertainty')
+        if kind=='timing_effective' and (not p.get('truth_z_validation') or
+                p['training_input_photons']!=p['training_photons']+p['undefined_factor_photons']):
+            raise ValueError('Timing-effective calibration provenance/count mismatch')
         if len(set(p["training_events"])) != len(p["training_events"]):
             raise ValueError("Duplicate calibration event")
         for name, shape in [("radius_counts", (nr,)), ("joint_counts", (nr, nt))]:
@@ -238,61 +252,118 @@ class Calibration:
         return ri, ti
 
 
+def _fit_factor_arrays(radius, dt, k, contract, *, training_events, source_sha256,
+                       training_sigma_ns=0., training_entrance_sigma_ns=0., min_count=20,
+                       radius_edges=None, delay_edges_ns=None, factor_kind='geometric_path', **metadata):
+    """Shared grouped fit; one sort per grouping, never a full mask per bin."""
+    radius, dt, k = [np.asarray(v,float) for v in (radius,dt,k)]
+    if (k.ndim!=1 or not len(k) or radius.shape!=k.shape or dt.shape!=k.shape or
+            not all(np.isfinite(a).all() for a in (radius,dt,k)) or np.any(radius<0) or np.any(dt<0) or
+            (factor_kind=='geometric_path' and np.any(k<1))):
+        raise ValueError('Need finite aligned calibration factors/radii/delays')
+    if len(source_sha256)!=64 or any(c not in '0123456789abcdef' for c in source_sha256):
+        raise ValueError('Need SHA-256 of calibration input')
+    if (min_count<1 or min(training_sigma_ns,training_entrance_sigma_ns)<0 or
+            not np.isfinite([training_sigma_ns,training_entrance_sigma_ns]).all()):
+        raise ValueError('Invalid calibration options')
+    cap=(contract.fiber_outer_radius_mm+1e-5)/contract.core_radius_mm+contract.radius_padding
+    if np.any(radius > (cap if factor_kind=='timing_effective' else 1+contract.radius_padding)+1e-10):
+        raise ValueError('Pixel radius incompatible with calibration contract')
+    default=np.linspace(0,1,41)
+    if factor_kind=='timing_effective':default=np.r_[default,cap+1e-9]
+    re=np.asarray(default if radius_edges is None else radius_edges,float)
+    de=np.asarray(np.logspace(-2,np.log10(60),36) if delay_edges_ns is None else delay_edges_ns,float)
+    if (re.ndim!=1 or len(re)<2 or not np.isfinite(re).all() or re[0]!=0 or re[-1]<1 or
+            (factor_kind=='geometric_path' and re[-1]!=1) or np.any(np.diff(re)<=0) or
+            de.ndim!=1 or not len(de) or not np.isfinite(de).all() or de[0]<=0 or np.any(np.diff(de)<=0)):
+        raise ValueError('Invalid calibration bins')
+    qs=np.linspace(.05,.95,10);edges=np.r_[0.,de];nr,nt=len(re)-1,len(edges)+1
+    ri=np.clip(np.searchsorted(re,radius,side='right')-1,0,nr-1)
+    ti=np.searchsorted(edges,dt,side='right');ti[dt==0]=0
+    global_median=float(np.median(k));global_q=np.quantile(k,qs)
+    med=np.full(nr,global_median);qm=np.tile(global_q,(nr,1));rc=np.bincount(ri,minlength=nr)
+    def groups(index):
+        order=np.argsort(index,kind='stable');ids,starts,counts=np.unique(index[order],return_index=True,return_counts=True)
+        values=k[order]
+        for b,s,n in zip(ids,starts,counts):yield int(b),values[s:s+n]
+    for r,values in groups(ri):
+        if len(values)>=min_count:med[r],qm[r]=np.median(values),np.quantile(values,qs)
+    jm=np.repeat(med[:,None],nt,axis=1);jq=np.repeat(qm[:,None,:],nt,axis=1)
+    counts=np.bincount(ri*nt+ti,minlength=nr*nt).reshape(nr,nt)
+    fallback=np.broadcast_to(np.where(rc>=min_count,1,2)[:,None],(nr,nt)).copy()
+    for b,values in groups(ri*nt+ti):
+        if len(values)>=min_count:
+            r,t=divmod(b,nt);jm[r,t],jq[r,t]=np.median(values),np.quantile(values,qs);fallback[r,t]=0
+    return Calibration(dict(algorithm=ALGORITHM_VERSION,factor_kind=factor_kind,contract=asdict(contract),
+        contract_sha256=contract.sha256,source_sha256=source_sha256,
+        training_events=sorted(set(training_events)),training_sigma_ns=training_sigma_ns,
+        training_entrance_sigma_ns=training_entrance_sigma_ns,training_photons=len(k),global_median=global_median,
+        min_count=min_count,radius_edges=re.tolist(),delay_edges_ns=edges.tolist(),quantiles=qs.tolist(),
+        radius_median=med.tolist(),joint_median=jm.tolist(),joint_quantiles=jq.tolist(),
+        radius_counts=rc.tolist(),joint_counts=counts.tolist(),fallback_level=fallback.tolist(),**metadata))
+
+
 def fit_calibration(obs, kappa_truth, contract, *, source_sha256, training_sigma_ns=0.0,
-                    min_count=20, radius_edges=None, delay_edges_ns=None):
-    """Fit truth-labelled kappa on CALIBRATION EVENTS ONLY.
+                    training_entrance_sigma_ns=0., min_count=20, radius_edges=None, delay_edges_ns=None):
+    """Fit validated geometric path factors on CALIBRATION EVENTS ONLY.
 
     Equal-probability midpoint quantiles have equal initial mass. The true 50%
     median is stored separately (the 55% candidate is not called a median).
     Sparse bins fall back radius->global; counts/fallback levels are archived.
     source_sha256 identifies the immutable input manifest/cache, not a pathname.
     """
-    k = np.asarray(kappa_truth, float)
-    if k.shape != obs.time_ns.shape or not len(k) or not np.isfinite(k).all() or np.any(k < 1):
+    k=np.asarray(kappa_truth,float)
+    if k.shape!=obs.time_ns.shape or not len(k) or not np.isfinite(k).all() or np.any(k<1):
         raise ValueError("Need finite aligned calibration kappa >= 1")
-    if len(source_sha256) != 64 or any(c not in "0123456789abcdef" for c in source_sha256):
-        raise ValueError("Need SHA-256 of calibration input")
-    if min_count < 1 or training_sigma_ns < 0 or not np.isfinite(training_sigma_ns):
-        raise ValueError("Invalid calibration options")
-    if np.any(obs.radius > 1+contract.radius_padding+1e-10):
-        raise ValueError("Pixel radius incompatible with core/pitch")
-    re = np.asarray(np.linspace(0, 1, 41) if radius_edges is None else radius_edges, float)
-    de = np.asarray(np.logspace(-2, np.log10(60), 36) if delay_edges_ns is None else delay_edges_ns, float)
-    if (re.ndim != 1 or len(re) < 2 or not np.isfinite(re).all() or re[0] != 0 or re[-1] != 1 or
-            np.any(np.diff(re) <= 0) or de.ndim != 1 or not len(de) or
-            not np.isfinite(de).all() or de[0] <= 0 or np.any(np.diff(de) <= 0)):
-        raise ValueError("Invalid calibration bins")
-    qs = np.linspace(.05, .95, 10)
-    nr = len(re)-1
-    # Add a zero edge to separate zero from arbitrarily small positive delays.
-    edges = np.r_[0., de]
-    nt = len(edges)+1
-    ri = np.clip(np.searchsorted(re, obs.radius, side="right")-1, 0, nr-1)
-    dt = channel_delay(obs)
-    ti = np.searchsorted(edges, dt, side="right")
-    ti[dt == 0] = 0
-    med = np.full(nr, np.median(k)); qm = np.tile(np.quantile(k, qs), (nr, 1))
-    rc = np.bincount(ri, minlength=nr)
-    for r in range(nr):
-        if rc[r] >= min_count:
-            med[r], qm[r] = np.median(k[ri == r]), np.quantile(k[ri == r], qs)
-    jm = np.repeat(med[:, None], nt, axis=1)
-    jq = np.repeat(qm[:, None, :], nt, axis=1)
-    counts = np.zeros((nr, nt), int)
-    fallback = np.broadcast_to(np.where(rc >= min_count, 1, 2)[:, None], (nr, nt)).copy()
-    for r, t in set(zip(ri.tolist(), ti.tolist())):
-        mask = (ri == r) & (ti == t)
-        counts[r, t] = np.sum(mask)
-        if counts[r, t] >= min_count:
-            jm[r, t], jq[r, t] = np.median(k[mask]), np.quantile(k[mask], qs)
-            fallback[r, t] = 0
-    return Calibration(dict(algorithm=ALGORITHM_VERSION, contract=asdict(contract),
-        contract_sha256=contract.sha256, source_sha256=source_sha256,
-        training_events=sorted(set(obs.event_key.tolist())), training_sigma_ns=training_sigma_ns,
-        training_photons=len(k),
-        min_count=min_count, radius_edges=re.tolist(), delay_edges_ns=edges.tolist(), quantiles=qs.tolist(),
-        radius_median=med.tolist(), joint_median=jm.tolist(), joint_quantiles=jq.tolist(),
-        radius_counts=rc.tolist(), joint_counts=counts.tolist(), fallback_level=fallback.tolist()))
+    return _fit_factor_arrays(obs.radius,channel_delay(obs),k,contract,training_events=obs.event_key.tolist(),
+        source_sha256=source_sha256,training_sigma_ns=training_sigma_ns,training_entrance_sigma_ns=training_entrance_sigma_ns,
+        min_count=min_count,radius_edges=radius_edges,delay_edges_ns=delay_edges_ns)
+
+
+def timing_effective_factor(obs, truth_z_mm, contract):
+    """Calibration label that round-trips the SAME inverse; never inference input.
+
+    Includes emission-front mismatch, mixed group speed AND timestamp noise.
+    It is NOT geometric path/axial distance and may be below one or negative.
+    At Z=L the parameter is undefined; retain those photons in evaluation.
+    """
+    z=np.asarray(truth_z_mm,float)
+    if z.shape!=obs.time_ns.shape or not np.isfinite(z).all() or np.any((z<0)|(z>contract.length_mm)):
+        raise ValueError('Need aligned physical production-Z calibration truth')
+    front=contract.front_z*z+contract.front_x*obs.sensor_x_mm+contract.front_y*obs.sensor_y_mm+contract.front_offset_mm
+    distance=contract.length_mm-z
+    factor=np.divide(C_MM_NS*obs.time_ns-front,contract.n_group*distance,
+                     out=np.full(len(z),np.nan),where=distance>0)
+    return factor
+
+
+def fit_timing_calibration_batches(batches, contract, *, source_sha256, truth_z_validation,
+                                   training_sigma_ns=0., training_entrance_sigma_ns=0., **options):
+    """Stream (measured observations, true creation Z) from TRAINING files only.
+
+    Never requires photon direction or exact emission time. Keep all finite
+    effective factors, including <1. Count the undefined Z=L training labels;
+    no corresponding evaluation photon may be removed. Small per-file batches
+    avoid constructing millions of Python string identities at once.
+    """
+    if not isinstance(truth_z_validation,str) or not truth_z_validation.strip():
+        raise ValueError('Document the source/geometry validation of production Z')
+    radius=[];delays=[];factors=[];events=set();total=0;undefined=0
+    for obs,truth in batches:
+        k=timing_effective_factor(obs,truth,contract);good=np.isfinite(k)
+        events.update(obs.event_key.tolist());total+=len(k);undefined+=int((~good).sum())
+        radius.append(obs.radius[good]);delays.append(channel_delay(obs)[good]);factors.append(k[good])
+    if not factors:raise ValueError('Empty timing calibration')
+    k=np.concatenate(factors)
+    return _fit_factor_arrays(np.concatenate(radius),np.concatenate(delays),k,contract,
+        training_events=events,source_sha256=source_sha256,training_sigma_ns=training_sigma_ns,
+        training_entrance_sigma_ns=training_entrance_sigma_ns,factor_kind='timing_effective',
+        truth_z_validation=truth_z_validation,training_input_photons=total,undefined_factor_photons=undefined,
+        effective_factors_below_one=int((k<1).sum()),effective_factors_nonpositive=int((k<=0).sum()),**options)
+
+
+def fit_timing_calibration(obs, truth_z_mm, contract, **options):
+    return fit_timing_calibration_batches([(obs,truth_z_mm)],contract,**options)
 
 
 class DepthStatus(IntEnum):
@@ -327,7 +398,8 @@ def _kernel(sigma_bins):
 
 def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.,
                 entrance_sigma_ns=0., window=5, zbin_mm=20., clean_radius=.7,
-                exclude_same_rod=False, allow_training=False, fixed_n_eff=None):
+                exclude_same_rod=False, allow_training=False, fixed_n_eff=None,
+                allow_jitter_mismatch=False, geometric_guidance=None):
     """Fixed-calibration inference; no true z, kappa or emission time inputs.
 
     Compare radius / radius_delay / neighbour on the SAME accepted photons.
@@ -338,6 +410,13 @@ def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.
     quantile in kappa if the median inverse is invalid (never a boundary clip).
     """
     p = calibration.payload
+    kind=p.get('factor_kind','geometric_path')
+    matched=(np.isclose(sigma_t_ns,p['training_sigma_ns'],rtol=0,atol=1e-12) and
+             np.isclose(entrance_sigma_ns,p.get('training_entrance_sigma_ns',0.),rtol=0,atol=1e-12))
+    if not matched and not allow_jitter_mismatch:
+        raise ValueError('Calibration/evaluation timing jitter mismatch')
+    if geometric_guidance is None:geometric_guidance=(kind=='geometric_path')
+    if not isinstance(geometric_guidance,(bool,np.bool_)):raise ValueError('Invalid geometric-guidance option')
     if contract.sha256 != p["contract_sha256"]:
         raise ValueError("Calibration optical/geometry/sensor/gate contract mismatch")
     if not allow_training and set(obs.event_key).intersection(p["training_events"]):
@@ -350,7 +429,8 @@ def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.
             not np.isfinite([sigma_t_ns, entrance_sigma_ns, zbin_mm, clean_radius]).all() or
             sigma_t_ns < 0 or entrance_sigma_ns < 0 or zbin_mm <= 0 or not 0 < clean_radius <= 1):
         raise ValueError("Invalid reconstruction options")
-    if np.any(obs.radius > 1+contract.radius_padding+1e-10):
+    cap=(contract.fiber_outer_radius_mm+1e-5)/contract.core_radius_mm+contract.radius_padding
+    if np.any(obs.radius > (cap if kind=='timing_effective' else 1+contract.radius_padding)+1e-10):
         raise ValueError("Radius outside pixel/core contract")
     n, length = len(obs.time_ns), contract.length_mm
     ri, ti = calibration.bins(obs)
@@ -369,6 +449,7 @@ def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.
     # This is not permission to clip any physically inconsistent estimate.
     physical = lambda v: np.isfinite(v) & (v >= -1e-9) & (v <= length+1e-9)
     def allowed(v, k, b):
+        if not geometric_guidance:return physical(v)
         # A forward high-angle photon born right next to the face may arrive
         # before touching ANY wall. TIR is unnecessary for that population.
         # Its transverse path cannot exceed the longest chord ending at the
@@ -386,7 +467,11 @@ def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.
     options = dict(method=method, sigma_t_ns=sigma_t_ns, entrance_sigma_ns=entrance_sigma_ns,
                    window=window, zbin_mm=zbin_mm, clean_radius=clean_radius,
                    exclude_same_rod=exclude_same_rod, allow_training=allow_training,
-                   calibration_mode="fixed", fixed_n_eff=fixed_n_eff if method == "fixed" else None)
+                   calibration_mode="jitter_matched" if matched else "explicit_fixed_calibration_override",
+                   factor_kind=kind,geometric_guidance=bool(geometric_guidance),
+                   guidance_role=('heuristic_upper_bound_not_path_truth' if kind=='timing_effective' and geometric_guidance
+                                  else 'ideal_geometric_guidance' if geometric_guidance else 'physical_Z_range_only'),
+                   fixed_n_eff=fixed_n_eff if method == "fixed" else None)
     if method == "neighbour":
         nz = int(np.ceil(length/zbin_mm))
         # Conservative front/timing scale; the entrance-clock term is common
@@ -451,7 +536,8 @@ def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.
     z[~failure] = np.clip(z[~failure], 0, length)
     status[failure] = DepthStatus.NO_PHYSICAL_CANDIDATE
     selected_kappa[failure] = np.nan
-    derivative = C_MM_NS/(contract.n_group*selected_kappa-contract.front_z)
+    with np.errstate(divide='ignore',invalid='ignore'):
+        derivative = abs(C_MM_NS/(contract.n_group*selected_kappa-contract.front_z))
     # Conditional linear propagation only: NOT total depth errors/intervals.
     # It excludes path/emission ambiguity and candidate-selection uncertainty.
     return DepthResult(z, status, zc, density, zp, seeds, int(np.sum(clean & ~seeds)),
@@ -460,6 +546,40 @@ def reconstruct(obs, calibration, contract, *, method="neighbour", sigma_t_ns=0.
 
 
 # Truth-based evaluation. None of these truth arguments enter reconstruct().
+
+def response_matrix(truth_mm, reconstructed_mm, *, length_mm=2000., bins=40):
+    """True Z on x, reconstructed Z on y; retain failures in every denominator.
+
+    This evaluation product never enters inference. Residual quantiles condition
+    on physical returns; within-10-cm counts retain failures in the denominator.
+    The last bin includes the exact downstream endpoint.
+    """
+    truth, z = np.asarray(truth_mm, float), np.asarray(reconstructed_mm, float)
+    if (truth.ndim != 1 or z.shape != truth.shape or not np.isfinite(truth).all() or
+            not np.isfinite(length_mm) or length_mm <= 0 or
+            not isinstance(bins, (int, np.integer)) or isinstance(bins, bool) or bins < 2):
+        raise ValueError("Invalid response inputs/binning")
+    valid = np.isfinite(z)
+    if np.any((truth < 0) | (truth > length_mm)) or np.any(valid & ((z < 0) | (z > length_mm))):
+        raise ValueError("Response depths outside physical detector")
+    edges = np.linspace(0, length_mm, bins+1)
+    counts = np.histogram2d(truth[valid], z[valid], bins=(edges, edges))[0].astype(np.int64)
+    inputs = np.histogram(truth, edges)[0]
+    failed = np.histogram(truth[~valid], edges)[0]
+    good = np.histogram(truth[valid & (abs(z-truth) <= 100.)], edges)[0]
+    ids = np.minimum(np.searchsorted(edges, truth, side="right")-1, bins-1)
+    quantiles = []
+    for b in range(bins):
+        residual = z[valid & (ids == b)]-truth[valid & (ids == b)]
+        quantiles.append(np.percentile(residual, [16, 50, 84]).tolist() if len(residual) else [None]*3)
+    if not np.array_equal(counts.sum(axis=1)+failed, inputs):
+        raise ValueError("Truth/reconstruction response closure failure")
+    return dict(schema="z-response-v1", truth_edges_mm=edges.tolist(), reco_edges_mm=edges.tolist(),
+        counts=counts.tolist(), input_by_truth=inputs.tolist(), unreconstructed_by_truth=failed.tolist(),
+        within100mm_by_truth=good.tolist(), conditional_residual_q16_q50_q84_mm=quantiles,
+        input=len(truth), reconstructed=int(valid.sum()), unreconstructed=int((~valid).sum()),
+        normalization="all input per true-Z bin, including unreconstructed", closure=True)
+
 
 def residual_summary(truth_mm, reconstructed_mm, *, tolerances_mm=(50., 100., 200.)):
     truth, z = np.asarray(truth_mm, float), np.asarray(reconstructed_mm, float)
@@ -470,10 +590,16 @@ def residual_summary(truth_mm, reconstructed_mm, *, tolerances_mm=(50., 100., 20
     valid = np.isfinite(z)
     delta = z[valid]-truth[valid]
     q = np.percentile(delta, [16, 50, 84]) if len(delta) else [None]*3
+    absolute=np.sort(abs(delta));inclusive={}
+    for probability in (.5,.68,.95):
+        rank=int(np.ceil(probability*len(z)))-1
+        inclusive[str(probability)]=float(absolute[rank]) if 0<=rank<len(absolute) else None
     return dict(input=len(z), reconstructed=int(valid.sum()), unreconstructed=int((~valid).sum()),
         failure_fraction=float((~valid).mean()) if len(z) else None,
         conditional_bias_mm=None if not len(delta) else float(q[1]),
         conditional_68_halfwidth_mm=None if not len(delta) else float((q[2]-q[0])/2),
+        inclusive_abs_error_quantiles_mm=inclusive,
+        inclusive_quantile_definition='nearest-rank |Zreco-Ztrue| over all photons; failures at infinity; null if unreachable',
         inclusive_within={str(t): float(np.sum(abs(delta) <= t)/len(z)) if len(z) else None for t in tolerances_mm})
 
 
@@ -542,4 +668,5 @@ def evaluate(obs, truth_mm, result, contract, *, bootstrap_draws=200, seed=20261
     report["event_block_bootstrap"] = dict(draws=len(draws), seed=seed, percentile_95=intervals,
         unavailable_reason="need at least two independent events" if len(events) < 2 else None)
     report["closure"] = report["input"] == report["reconstructed"]+report["unreconstructed"]
+    report["response"] = response_matrix(truth, result.z_mm, length_mm=contract.length_mm)
     return report

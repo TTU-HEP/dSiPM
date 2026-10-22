@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 import numpy as np
 from dsipm.depth import (C_MM_NS, Calibration, DepthContract, DepthStatus, PhotonObservations,
-                        channel_delay, fit_calibration, reconstruct, evaluate, residual_summary)
+                        channel_delay, fit_calibration, reconstruct, evaluate, residual_summary, response_matrix)
 from dsipm.sensors import make_observations, smear_observations
 from dsipm.geometry import (FIBER_OFFSETS_MM, dreamsim_front_contract, localize_endpoints,
                            rotation, world_to_calorimeter, RayStatus, trace_cylinder)
@@ -23,10 +23,11 @@ def observations(t, r=None, events=None, rx=None, ry=None):
         np.full(n, .1) if r is None else np.asarray(r, float), np.zeros(n), np.zeros(n))
 
 
-def calibration(contract=None, k=1.02, quantiles=None):
+def calibration(contract=None, k=1.02, quantiles=None, sigma=0.,clock=0.):
     contract = contract or DepthContract()
     o = observations(np.linspace(7, 9, 30), events=["train"]*30)
-    c = fit_calibration(o, np.full(30, k), contract, source_sha256="a"*64)
+    c = fit_calibration(o, np.full(30, k), contract, source_sha256="a"*64,
+                        training_sigma_ns=sigma,training_entrance_sigma_ns=clock)
     if quantiles is not None:
         p = copy.deepcopy(c.payload)
         p["joint_quantiles"] = np.broadcast_to(quantiles, np.asarray(p["joint_quantiles"]).shape).tolist()
@@ -81,7 +82,7 @@ class DepthReconstructionTests(unittest.TestCase):
 
     def test_local_timing_uncertainties_are_separate_not_total_errors(self):
         c = DepthContract(); o = observations([c.forward_time(1000, 1.02)])
-        r = reconstruct(o, calibration(c), c, sigma_t_ns=.05, entrance_sigma_ns=.01)
+        r = reconstruct(o, calibration(c,sigma=.05,clock=.01), c, sigma_t_ns=.05, entrance_sigma_ns=.01)
         self.assertAlmostEqual(r.photon_timing_sigma_z_mm[0], .05*C_MM_NS/(c.n_group*1.02-c.front_z))
         self.assertAlmostEqual(r.entrance_timing_sigma_z_mm[0], r.photon_timing_sigma_z_mm[0]/5)
 
@@ -97,7 +98,7 @@ class DepthReconstructionTests(unittest.TestCase):
 
     def test_isolated_photon_has_exactly_zero_support(self):
         c = DepthContract(); o = observations([c.forward_time(1000, 1.02)])
-        r = reconstruct(o, calibration(c), c, sigma_t_ns=.05)
+        r = reconstruct(o, calibration(c,sigma=.05), c, sigma_t_ns=.05)
         self.assertTrue(r.prior_seed[0])
         self.assertEqual(float(r.candidate_density.max()), 0)
         self.assertEqual(r.status[0], DepthStatus.CALIBRATED_FALLBACK)
@@ -190,6 +191,371 @@ class DepthReconstructionTests(unittest.TestCase):
         self.assertEqual(a["event_block_bootstrap"]["draws"], 25)
 
 
+class DepthResponseTests(unittest.TestCase):
+    def test_orientation_endpoints_and_failure_denominators(self):
+        r = response_matrix([0., 100., 500., 2000.], [2000., np.nan, 500., 0.], bins=4)
+        h = np.array(r["counts"])
+        self.assertEqual(h[0, 3], 1)  # true on x, reco on y; never transposed
+        self.assertEqual(h[3, 0], 1)
+        self.assertEqual(r["input_by_truth"], [2, 1, 0, 1])
+        self.assertEqual(r["unreconstructed_by_truth"], [1, 0, 0, 0])
+        self.assertEqual(r["within100mm_by_truth"], [0, 1, 0, 0])
+        np.testing.assert_equal(h.sum(axis=1)+r["unreconstructed_by_truth"], r["input_by_truth"])
+
+    def test_empty_and_conditional_quantiles(self):
+        self.assertEqual(response_matrix([], [], bins=2)["input"], 0)
+        r = response_matrix([100., 200., 300.], [110., 230., np.nan], bins=2)
+        self.assertEqual(r["conditional_residual_q16_q50_q84_mm"][0][1], 20.)
+        self.assertEqual(r["input_by_truth"][0], 3)
+        self.assertEqual(r["unreconstructed_by_truth"][0], 1)
+
+    def test_out_of_detector_response_cannot_be_silently_dropped(self):
+        for truth, z in [([500.], [-1.]), ([500.], [2001.]), ([-1.], [np.nan]), ([2001.], [5.])]:
+            with self.assertRaisesRegex(ValueError, "physical"):
+                response_matrix(truth, z)
+        for bins in [1, 1.5, True]:
+            with self.assertRaises(ValueError): response_matrix([10.], [20.], bins=bins)
+
+
+class EmpiricalCorrectionTests(unittest.TestCase):
+    def test_timing_effective_factor_roundtrips_tilt_speed_and_delay(self):
+        from dsipm.depth import timing_effective_factor
+        c,_,_=dreamsim_front_contract()
+        z=np.array([500.,1000.,1950.]);factor=np.array([1.02,.96,-.2])
+        a=observations(c.forward_time(z,factor),events=['train']*3)
+        k=timing_effective_factor(a,z,c)
+        np.testing.assert_allclose(k,factor,atol=1e-13)
+        np.testing.assert_allclose(c.inverse(a.time_ns,k),z,atol=1e-9)
+        self.assertTrue(np.isnan(timing_effective_factor(observations([8.]),[2000.],c)[0]))
+
+    def test_timing_calibration_counts_undefined_labels_without_removing_evaluation(self):
+        from dsipm.depth import fit_timing_calibration
+        c=DepthContract();z=np.array([500.,1000.,2000.]);a=observations(c.forward_time(z,.96),events=['train']*3)
+        model=fit_timing_calibration(a,z,c,source_sha256='a'*64,truth_z_validation='synthetic exact creation positions')
+        self.assertEqual(model.payload['training_input_photons'],3)
+        self.assertEqual(model.payload['undefined_factor_photons'],1)
+        self.assertEqual(model.payload['effective_factors_below_one'],2)
+        self.assertGreater(model.payload['radius_edges'][-1],1)
+        test=observations([a.time_ns[0],a.time_ns[1],100.],events=['eval']*3)
+        result=reconstruct(test,model,c,method='radius')
+        self.assertEqual(len(result.z_mm),3)
+        np.testing.assert_allclose(result.z_mm[:2],z[:2],atol=1e-9)
+        self.assertTrue(np.isnan(result.z_mm[2]))
+        self.assertFalse(result.options['geometric_guidance'])
+        with self.assertRaises(ValueError):
+            fit_timing_calibration(a,z,c,source_sha256='a'*64,truth_z_validation='')
+
+    def test_jitter_must_match_or_be_explicitly_overridden(self):
+        c=DepthContract();a=observations([8.])
+        with self.assertRaisesRegex(ValueError,'jitter mismatch'):
+            reconstruct(a,calibration(c),c,sigma_t_ns=.05)
+        with self.assertRaisesRegex(ValueError,'jitter mismatch'):
+            reconstruct(a,calibration(c,sigma=.05),c,sigma_t_ns=.05,entrance_sigma_ns=.01)
+        r=reconstruct(a,calibration(c),c,sigma_t_ns=.05,allow_jitter_mismatch=True)
+        self.assertEqual(r.options['calibration_mode'],'explicit_fixed_calibration_override')
+        r=reconstruct(a,calibration(c,sigma=.05),c,sigma_t_ns=.05)
+        self.assertEqual(r.options['calibration_mode'],'jitter_matched')
+
+    def test_grouped_fit_is_permutation_identical_and_matches_mask_reference(self):
+        rng=np.random.default_rng(7);n=90
+        a=observations(rng.uniform(7,10,n),r=rng.uniform(0,1,n),events=['train']*n)
+        k=rng.uniform(1,2,n);c=DepthContract()
+        options=dict(source_sha256='b'*64,min_count=3,radius_edges=[0,.5,.9,.95,1],delay_edges_ns=[.01,.1,1])
+        m=fit_calibration(a,k,c,**options);ri,ti=m.bins(a);p=m.payload
+        for r in range(len(p['radius_median'])):
+            use=ri==r
+            expected=np.median(k[use]) if use.sum()>=3 else np.median(k)
+            self.assertEqual(p['radius_median'][r],expected)
+            for t in range(len(p['delay_edges_ns'])+1):
+                joint=use&(ti==t)
+                value=np.median(k[joint]) if joint.sum()>=3 else expected
+                self.assertEqual(p['joint_median'][r][t],value)
+        order=rng.permutation(n);b=fit_calibration(a.subset(order),k[order],c,**options)
+        self.assertEqual(m.sha256,b.sha256)
+
+    def test_inclusive_error_quantiles_assign_failures_infinite_error(self):
+        r=residual_summary([0.,0.,0.,0.],[1.,2.,3.,np.nan])
+        self.assertEqual(r['inclusive_abs_error_quantiles_mm']['0.68'],3.)
+        self.assertIsNone(r['inclusive_abs_error_quantiles_mm']['0.95'])
+        r=residual_summary([0.,0.,0.],[1.,np.nan,np.nan])
+        self.assertIsNone(r['inclusive_abs_error_quantiles_mm']['0.68'])
+
+    def test_measured_features_exclude_target_rod_and_other_events(self):
+        from compareDepthCorrections import observable_features,feature_spec
+        spec=feature_spec();c=DepthContract()
+        a=observations([8.,9.,7.,30.,5.],events=['a','a','a','a','b'],rx=[0,0,1,20,0])
+        f=observable_features(a,c,spec)
+        # Same-rod relative delay is recomputed from measured times.
+        self.assertEqual(f[0,2],0)
+        self.assertEqual(f[1,2],np.searchsorted(spec['delay_edges_ns'],1.,side='right'))
+        # The other rod has first time 7 ns; own 8 ns is excluded completely.
+        self.assertEqual(f[0,3],np.searchsorted(spec['neighbour_edges_ns'],1.,side='right'))
+        # A distant rod and a separate event have no neighbours.
+        self.assertEqual(f[3,3],len(spec['neighbour_edges_ns'])+1)
+        self.assertEqual(f[4,3],len(spec['neighbour_edges_ns'])+1)
+        perm=np.array([4,2,1,3,0]); b=a.subset(perm)
+        np.testing.assert_array_equal(observable_features(b,c,spec),f[perm])
+        # Radius is normalized to the *core*, while valid accepted endpoints
+        # can be in cladding up to the outer radius. Never silently cut them.
+        edge=c.fiber_outer_radius_mm/c.core_radius_mm+c.radius_padding
+        self.assertEqual(observable_features(observations([8.],r=[edge]),c,spec).shape,(1,4))
+        with self.assertRaisesRegex(ValueError,'radius'):
+            observable_features(observations([8.],r=[edge+.001]),c,spec)
+
+    def test_empirical_maps_are_labelled_depth_not_kappa_and_fallback_is_explicit(self):
+        from compareDepthCorrections import dimensions,fit_tables,predict_tables
+        spec=dict(time_edges_ns=[8.],radius_edges=[.5],delay_edges_ns=[0.],neighbour_edges_ns=[0.],
+                  target_edges_mm=[0.,1000.,2000.],min_photons=2,min_sources=2)
+        dims=dimensions(spec);h=np.zeros(dims+(2,),np.int64)
+        h[0,0,0,0,0]=10;h[1,1,0,0,1]=10
+        supports=[np.zeros(dims[:j],np.int64) for j in range(1,5)]
+        # Independent sources, not the 20 photons, determine support.
+        supports[0][:]=2
+        tables,valid=fit_tables(h,supports,spec)
+        z,levels=predict_tables(np.array([[0,0,0,0],[1,1,0,0]]),tables,valid)
+        np.testing.assert_allclose(z[0],[500.,1500.])
+        np.testing.assert_array_equal(levels[-1],[1,1])
+        # Changing held-out labels cannot enter the inference API.
+        self.assertEqual(len(z),4)
+        self.assertTrue(np.all((z[-1]>=0)&(z[-1]<=2000)))
+        with self.assertRaises(ValueError):fit_tables(h[:1],supports,spec)
+        with self.assertRaises(ValueError):fit_tables(h*0,supports,spec)
+
+    def test_score_includes_all_failures_and_exact_tolerance_endpoints(self):
+        from compareDepthCorrections import score
+        ze=np.array([0.,1000.,2000.]);re=np.array([-2000.,0.,2000.])
+        h=dict(response=np.zeros((1,1,2,2),np.int64),failures=np.zeros((1,1,2),np.int64),
+               denominator=np.zeros((1,1,2),np.int64),within=np.zeros((1,1,2,3),np.int64),
+               residual=np.zeros((1,1,2),np.int64))
+        r=score(h,0,0,np.array([0.,1000.,2000.,50.]),np.array([100.,np.nan,2001.,0.]),ze,re)
+        np.testing.assert_array_equal(r,[4,2,1,2,2])
+        np.testing.assert_array_equal(h['response'].sum(axis=-1)+h['failures'],h['denominator'])
+
+    def test_complete_crossfit_replays_baseline_and_keeps_source_holdouts(self):
+        from unittest.mock import patch
+        from dataclasses import asdict
+        from compareDepthCorrections import compare
+        from reduceDepthCampaign import make_histograms,accumulate
+        from dsipm.io import file_sha256
+        c=DepthContract();rows=[]
+        spec=dict(time_edges_ns=[8.],radius_edges=[.5],delay_edges_ns=[0.],neighbour_edges_ns=[0.],
+                  target_edges_mm=[0.,1000.,2000.],min_photons=1,min_sources=1,window_rods=5)
+        plan=dict(_sha256='b'*64,code_revision='test',contract=asdict(c),contract_sha256=c.sha256,
+                  z_edges_mm=[0.,1000.,2000.],residual_edges_mm=[-2000.,0.,2000.],sigmas_ps=[0,50],
+                  baselines=[dict(name='axial',n_eff=1.49)],noise_seed=123,crossfit_folds=2,empirical_features=spec)
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for i in range(4):
+                sha=str(i)*64;key=sha+':0'
+                row=dict(root_file='/fake/'+str(i)+'.root',root_sha256=sha,events=1,offset=i,sample='piplus_100gev',fold=i%2)
+                rows.append(row);out=root/'results'/str(i);out.mkdir(parents=True)
+                a=observations(np.linspace(8,9,20),events=[key]*20)
+                truth=c.inverse(a.time_ns,1.)
+                np.savez_compressed(out/'accepted.npz',entry=np.zeros(20,np.int32),truth_z_mm=truth,
+                    **{k:getattr(a,k) for k in a.__dataclass_fields__ if k!='event_key'})
+                h=make_histograms(plan)
+                for si,s in enumerate(plan['sigmas_ps']):
+                    noisy=smear_observations(a,sigma_t_ns=s/1000,seed=plan['noise_seed'])
+                    accumulate(h,0,si,truth,c.inverse(noisy.time_ns,1.),plan['z_edges_mm'],plan['residual_edges_mm'])
+                np.savez_compressed(out/'histograms.npz',**h)
+                (out/'audit.json').write_text(json.dumps(dict(input={k:v for k,v in row.items() if k!='fold'},
+                    plan_sha256=plan['_sha256'],contract_sha256=c.sha256,records=[dict(entry=0,accepted=20)],
+                    observations_sha256=file_sha256(out/'accepted.npz'),histograms_sha256=file_sha256(out/'histograms.npz'))))
+            with patch.dict('os.environ',{'SLURM_JOB_ID':'fixture'}):compare(rows,plan,root,root/'comparison')
+            summary=json.loads((root/'comparison/summary.json').read_text())
+            self.assertEqual(summary['accepted_photons'],80)
+            for model in summary['calibrations']:
+                self.assertFalse(set(model['training_sources']) & set(model['evaluation_sources']))
+                self.assertEqual(model['training_photons'],40)
+            with np.load(root/'comparison/comparison.npz') as f:
+                self.assertTrue(np.all(f['denominator'].sum(axis=-1)==80))
+                np.testing.assert_array_equal(f['response'].sum(axis=-1)+f['failures'],f['denominator'])
+            from compareDepthCorrections import method_task,merge_methods,TIMING_METHODS
+            method_plan=dict(plan,cache_directory=str(root),factor_min_count=3,
+                truth_z_validation='synthetic exact creation positions',window_rods=5,clean_radius=.7)
+            with patch.dict('os.environ',{'SLURM_JOB_ID':'fixture_methods'}):
+                for fold in range(2):
+                    for sigma in plan['sigmas_ps']:
+                        report=method_task(rows,method_plan,plan,root/'method_results'/f'fold{fold}_{sigma}ps',fold=fold,sigma=sigma)
+                        self.assertEqual(report['training_sigma_ns'],sigma/1000)
+                        self.assertEqual(report['reconstruction_options']['neighbour']['method'],'neighbour')
+                        self.assertFalse(report['reconstruction_options']['neighbour']['geometric_guidance'])
+                        self.assertTrue(report['reconstruction_options']['neighbour_guided']['geometric_guidance'])
+                report=merge_methods(rows,method_plan,root,root/'actual_methods')
+            self.assertEqual(report['events'],4)
+            self.assertEqual(report['accepted_photons'],80)
+            self.assertEqual(report['methods'],list(TIMING_METHODS))
+            for case in report['cases'].values():self.assertEqual(case['input'],80)
+
+
+class AllPhotonCampaignTests(unittest.TestCase):
+    def test_all_inputs_include_nonphysical_and_nonfinite_failures(self):
+        from reduceDepthCampaign import make_histograms, accumulate
+        plan = dict(z_edges_mm=[0.,500.,1000.,2000.], residual_edges_mm=[-2000.,0.,2000.],
+                    baselines=[dict(name='axial',n_eff=1.49)], sigmas_ps=[0.,50.])
+        a = make_histograms(plan)
+        r = accumulate(a,0,0,[0.,500.,2000.,1000.],[np.nan,500.,3000.,np.inf],
+                       plan['z_edges_mm'],plan['residual_edges_mm'])
+        self.assertEqual(r,dict(input=4,reconstructed=1,failed=3,within100mm=1))
+        np.testing.assert_array_equal(a['response'][0,0].sum(axis=1)+a['failures'][0,0],a['denominator'][0,0])
+        self.assertEqual(a['response'][0,0,1,1],1)
+        accumulate(a,0,0,[0.,2000.],[2000.,0.],plan['z_edges_mm'],plan['residual_edges_mm'])
+        self.assertEqual(a['residual'].sum(),3)  # both residual endpoints retained
+        self.assertEqual(a['depth_residual'].sum(),3)
+        self.assertEqual(a['denominator'].sum(),6)
+        self.assertEqual(a['within'][0,0,:,1].sum(),1)
+        self.assertEqual(a['denominator'][0,1].sum(),0)
+        with self.assertRaisesRegex(ValueError,'Misaligned'):
+            accumulate(a,0,0,[0.,100.],[0.],plan['z_edges_mm'],plan['residual_edges_mm'])
+        with self.assertRaisesRegex(ValueError,'Invalid true'):
+            accumulate(a,0,0,[-1.],[0.],plan['z_edges_mm'],plan['residual_edges_mm'])
+
+    def test_plan_cannot_hide_histogram_overflows(self):
+        from reduceDepthCampaign import make_histograms
+        good = dict(z_edges_mm=[0.,1000.,2000.],residual_edges_mm=[-2000.,0.,2000.],
+                    baselines=[dict(name='axial',n_eff=1.49)],sigmas_ps=[0.,50.])
+        for bad in [dict(z_edges_mm=[0.,1000.,1999.]),dict(residual_edges_mm=[-1000.,0.,2000.]),
+                    dict(sigmas_ps=[0.,0.]),dict(sigmas_ps=[-1.]),dict(z_edges_mm=[0.,2000.,1000.])]:
+            with self.assertRaises(ValueError): make_histograms(dict(good,**bad))
+
+    def test_campaign_requires_slurm_before_reading(self):
+        from unittest.mock import patch
+        import reduceDepthCampaign
+        with patch.dict('os.environ',{},clear=True):
+            with self.assertRaisesRegex(RuntimeError,'Slurm'): reduceDepthCampaign.main()
+
+    def test_complete_synthetic_event_accounts_for_gate_and_calibration(self):
+        from unittest.mock import patch
+        import csv
+        import gzip
+        from dsipm.io import file_sha256
+        from dsipm.sensors import digitize_full_detector_event, FullDetectorScenario
+        from reduceDepthCampaign import reduce_one, merge_campaign, depth_support
+        raw = event()
+        raw.time_ns[:2] = [-1.,45.]  # reader retains these; sensor window does not
+        order = np.flatnonzero((raw.time_ns>0)&(raw.time_ns<40))
+        order = order[np.argsort(raw.time_ns[order],kind='stable')]
+        e = SimpleNamespace(**{k:v[order] for k,v in vars(raw).items()},event_index=0)
+        ref = DepthContract.from_workflow()
+        digit = digitize_full_detector_event(e,FullDetectorScenario(ref.pde,ref.pitch_um,ref.recovery_ns))
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root/'fixture.root'
+            side = Path(str(source)+'.validation.json')
+            side.write_text(json.dumps(dict(status='valid',entries=1)))
+            row = dict(root_file=str(source),sidecar_sha256=file_sha256(side),root_sha256='a'*64,
+                       sample='fixture',events=1,offset=0)
+            table = root/'reference/reductions/fixture/fixture.events.csv.gz'
+            table.parent.mkdir(parents=True)
+            with gzip.open(table,'wt') as f:
+                writer = csv.DictWriter(f,fieldnames=['source_entry','selected_cherenkov_photons','detected_reference','accepted_reference'])
+                writer.writeheader(); writer.writerow(dict(source_entry=0,selected_cherenkov_photons=len(order),
+                    detected_reference=digit.n_detected,accepted_reference=digit.n_accepted))
+            (table.parent/'release_validation.json').write_text(json.dumps(dict(input=row,events_sha256=file_sha256(table))))
+            plan = dict(_sha256='b'*64,code_revision='fixture',production_pins={},reference_release=str(root/'reference'),
+                z_edges_mm=[0.,1000.,2000.],residual_edges_mm=[-2000.,0.,2000.],sigmas_ps=[0,50],
+                baselines=[dict(name='axial',n_eff=1.49),dict(name='historical_fixed',n_eff=1.553)],
+                entrance_sigma_ps=0,noise_seed=20261021,old_calibration_root_sha256='a'*64,old_calibration_event_indices=[0],
+                contract_sha256=dreamsim_front_contract(pde=ref.pde,pitch_um=ref.pitch_um,recovery_ns=ref.recovery_ns,
+                    workflow_sha256=ref.workflow_sha256)[0].sha256,selection='synthetic',scope='test',target='test')
+            truth = dict(truth_z_mm=np.linspace(0.,2000.,len(raw.time_ns)))
+            yielded = [('a'*64+':0',(raw,np.arange(len(raw.time_ns)),truth,dict(raw=703,rejected=3)))]
+            with patch.dict('os.environ',SLURM_JOB_ID='fixture'),patch('reduceDepthCampaign.iter_corrected_root',return_value=iter(yielded)) as read:
+                report = reduce_one(row,plan,root/'output')
+            self.assertEqual(read.call_args.args[2].gate_ns,(-1e300,1e300))
+            r = report['records'][0]
+            self.assertEqual(r['raw'],703); self.assertEqual(r['geometric_downstream'],700)
+            self.assertEqual(r['outside_sensor_window'],2)
+            self.assertEqual(r['incident_in_window'],r['not_detected']+r['lost_holdoff']+r['accepted'])
+            self.assertTrue(r['baselines']['historical_fixed_50ps']['calibration_entry'])
+            with np.load(root/'output/results/fixture/histograms.npz') as h:
+                self.assertEqual(h['denominator'][0,0].sum(),digit.n_accepted)
+                self.assertEqual(h['denominator'][0,1].sum(),digit.n_accepted)
+                self.assertEqual(h['denominator'][1].sum(),0)
+                np.testing.assert_array_equal(h['stage_truth'].sum(axis=1),[700,2,698,698-digit.n_detected,digit.n_detected-digit.n_accepted,digit.n_accepted])
+            self.assertEqual(reduce_one(row,plan,root/'output'),report)
+            merged = merge_campaign([row],plan,root/'output',root/'checkpoint',bootstrap_draws=5)
+            self.assertEqual(merged['events'],1)
+            self.assertEqual(merged['samples']['fixture']['photon_stages']['accepted'],digit.n_accepted)
+            self.assertEqual(merged['samples']['fixture']['cases']['axial_50ps']['input'],digit.n_accepted)
+            self.assertFalse(merged['optical_transport_validated'])
+            support=depth_support([row],plan,root/'output',root/'checkpoint',root/'support',
+                summary_sha256=file_sha256(root/'checkpoint/summary.json'),draws=20)
+            self.assertEqual(support['events'],1)
+            self.assertEqual(support['samples']['fixture']['source_files'],1)
+            with np.load(root/'support/fixture.depth_support.npz') as h:
+                self.assertFalse(h['precision_qualified'].any())
+                self.assertEqual(h['source_files_by_truth'][0,0].tolist(),[1,1])
+            with self.assertRaisesRegex(ValueError,'checkpoint mismatch'):
+                depth_support([row],plan,root/'output',root/'checkpoint',root/'bad_support',summary_sha256='a'*64)
+            with self.assertRaises(FileExistsError): merge_campaign([row],plan,root/'output',root/'checkpoint')
+            (root/'output/results/fixture/histograms.npz').write_bytes(b'corrupt')
+            with self.assertRaisesRegex(ValueError,'checksum'): reduce_one(row,plan,root/'output')
+            with self.assertRaisesRegex(ValueError,'hash mismatch'): merge_campaign([row],plan,root/'output',root/'bad_checkpoint')
+
+    def test_residual_quantiles_keep_empty_and_exact_endpoints(self):
+        from reduceDepthCampaign import residual_quantiles
+        self.assertEqual(residual_quantiles([0,0],[-2,0,2]),[None]*3)
+        np.testing.assert_allclose(residual_quantiles([1,1],[-2,0,2]),[-1.36,0.,1.36])
+
+    def test_campaign_plot_requires_full_checkpoint_plan_and_hashes(self):
+        from unittest.mock import patch
+        from dsipm.io import file_sha256
+        from reduceDepthCampaign import make_histograms
+        from studyDepthReconstruction import plot_campaign
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            plan=dict(baselines=[dict(name='axial',n_eff=1.49)],z_edges_mm=[0,1000,2000],
+                residual_edges_mm=[-2000,0,2000],sigmas_ps=[50],contract={},entrance_sigma_ps=0,scope='test',selection='test')
+            path=root/'plan.json';path.write_text(json.dumps(plan))
+            a=make_histograms(plan);a['response'][0,0,0,1]=1;a['response'][0,0,1,0]=1
+            a['failures'][0,0,0]=1;a['denominator'][0,0]=[2,1]
+            a['depth_residual'][0,0,0,1]=1;a['depth_residual'][0,0,1,0]=1
+            samples={}
+            for p in ('eplus','piplus'):
+                for e in (10,30,100,300):
+                    sample=p+'_'+str(e)+'gev';name=sample+'.npz'
+                    np.savez_compressed(root/name,**a,z_edges_mm=plan['z_edges_mm'],
+                        residual_edges_mm=plan['residual_edges_mm'],sigmas_ps=[50])
+                    samples[sample]=dict(events=5000,histograms_file=name,histograms_sha256=file_sha256(root/name),
+                        cases={'axial_50ps':dict(input=3,reconstructed=2,failed=1,within100mm=0,within100mm_pct=0.,
+                            failure_pct=100/3,conditional_residual_q16_q50_q84_mm=[-1000.,0.,1000.],conditional_sigma68_mm=1000.,
+                            file_bootstrap_95=dict(within100mm_pct=[0.,0.],failure_pct=[100/3,100/3]))})
+            summary=dict(status='complete_accounting_physics_provisional',closure=True,files=1648,events=40000,
+                samples=samples,plan_sha256=file_sha256(path),optical_transport_validated=False,residual_quantile_bin_width_mm=2000)
+            (root/'summary.json').write_text(json.dumps(summary))
+            args=SimpleNamespace(input=str(root),plan=str(path),output=str(root/'plots'),sigma_ps=50,baseline='axial')
+            with patch('studyDepthReconstruction.render_response') as render,patch('studyDepthReconstruction.render_resolution') as resolution:
+                plot_campaign(args)
+            self.assertEqual(render.call_count,8)
+            self.assertEqual(resolution.call_count,8)
+            self.assertEqual(render.call_args.args[0]['input_by_truth'],[2,1])
+            self.assertEqual(len((root/'plots/all_resolution_results.csv').read_text().splitlines()),9)
+            args.output=str(root/'must_not_exist')
+            (root/'piplus_300gev.npz').write_bytes(b'corrupt')
+            with self.assertRaisesRegex(ValueError,'hash mismatch'): plot_campaign(args)
+            self.assertFalse(Path(args.output).exists())
+            path.write_text('{}')
+            with self.assertRaisesRegex(ValueError,'plan checksum'): plot_campaign(args)
+
+    def test_resolution_figure_uses_inclusive_rates_and_refuses_overwrite(self):
+        try:
+            import matplotlib
+        except ImportError:
+            self.skipTest('Optional matplotlib is not installed')
+        from studyDepthReconstruction import render_resolution
+        plan=dict(sigmas_ps=[0,50,200,500],baselines=[dict(name='axial'),dict(name='historical_fixed')])
+        cases={m['name']+'_'+str(s)+'ps':dict(within100mm_pct=30-s/100,
+            file_bootstrap_95=dict(within100mm_pct=[29-s/100,31-s/100]))
+            for m in plan['baselines'] for s in plan['sigmas_ps']}
+        with TemporaryDirectory() as tmp:
+            render_resolution(dict(cases=cases),plan,tmp,label='synthetic regression')
+            self.assertTrue((Path(tmp)/'accuracy_vs_resolution.pdf').is_file())
+            manifest=json.loads((Path(tmp)/'resolution_manifest.json').read_text())
+            self.assertIn('failed inversions',manifest['denominator'])
+            self.assertEqual(manifest['cases'],cases)
+            with self.assertRaises(FileExistsError): render_resolution(dict(cases=cases),plan,tmp,label='test')
+
+
 class DepthSensorTests(unittest.TestCase):
     def test_matched_zero_and_nonzero_noise(self):
         c = DepthContract(); e = event()
@@ -243,6 +609,17 @@ class DepthSensorTests(unittest.TestCase):
 
 
 class DepthGeometryTests(unittest.TestCase):
+    def test_production_core_and_outer_radii_are_distinct(self):
+        # DREAMSim 54b2447, B4DetectorConstruction.cc: core_C_rMax=.39;
+        # clad_C_rMax=.40 mm. These are independent source constants.
+        c, _, _ = dreamsim_front_contract()
+        self.assertEqual(c.core_radius_mm, .39)
+        self.assertEqual(c.fiber_outer_radius_mm, .40)
+
+    def test_production_contract_rejects_outer_radius_as_core(self):
+        with self.assertRaisesRegex(ValueError, "core"):
+            dreamsim_front_contract(core_radius_mm=.4)
+
     def test_source_geometry_roundtrip_all_fibers_and_edges(self):
         for rx, ry in [(-45, -40), (-25, -25), (0, 0), (15, 25), (44, 39)]:
             for f in range(4):
@@ -351,17 +728,69 @@ class DepthPipelineTests(unittest.TestCase):
             subprocess.run([sys.executable, str(REPO/"studyDepthReconstruction.py"), "calibrate", "--input", str(d/"train"),
                             "--output", str(d/"cal.json")], check=True, capture_output=True, text=True)
             cmd = [sys.executable, str(REPO/"studyDepthReconstruction.py"), "scan", "--input", str(d/"test"),
-                   "--calibration", str(d/"cal.json"), "--output", str(d/"scan"), "--bootstrap-draws", "8"]
+                   "--calibration", str(d/"cal.json"), "--output", str(d/"scan"), "--bootstrap-draws", "8",'--allow-jitter-mismatch']
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             report = json.loads((d/"scan/summary.json").read_text())
             self.assertEqual(len(report["results"]), 12)
             for r in report["results"]:
                 self.assertTrue(r["evaluation"]["closure"])
                 self.assertEqual(r["evaluation"]["input"], len(zb))
+                matrix = r["evaluation"]["response"]
+                self.assertTrue(matrix["closure"])
+                self.assertEqual(matrix["input"], len(zb))
                 with np.load(d/"scan"/(r["name"]+".npz"), allow_pickle=False) as f:
                     np.testing.assert_equal(f["photon_id"], b.photon_id)
                     np.testing.assert_equal(f["event_key"], b.event_key)
             self.assertNotEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
+
+    def test_plot_rejects_cache_and_result_mismatches(self):
+        from dsipm.io import file_sha256
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            a, c, z, _ = fixture("eval", events=2, n=8)
+            save_cache(d/"cache", a, c, provenance={"timestamp_sigma_ns": 0}, truth_z_mm=z)
+            _, _, _, meta = load_cache(d/"cache")
+            (d/"run").mkdir()
+            record = d/"run/radius_50ps_draw0.npz"
+            np.savez_compressed(record, event_key=a.event_key, photon_id=a.photon_id, z_mm=z, status=np.zeros(len(z),int))
+            row = dict(name=record.stem, sha256=file_sha256(record), options=dict(method="radius",sigma_t_ns=.05))
+            summary = dict(source_cache=meta, results=[row])
+            cmd = [sys.executable,str(REPO/"studyDepthReconstruction.py"),"plot","--input",str(d/"cache"),
+                   "--run",str(d/"run"),"--output",str(d/"plots"),"--label","synthetic test"]
+            summary["source_cache"] = dict(meta, events=["wrong"])
+            (d/"run/summary.json").write_text(json.dumps(summary))
+            self.assertIn("does not match",subprocess.run(cmd,capture_output=True,text=True).stderr)
+            summary["source_cache"] = meta
+            row["sha256"] = "0"*64
+            (d/"run/summary.json").write_text(json.dumps(summary))
+            self.assertIn("hash mismatch",subprocess.run(cmd,capture_output=True,text=True).stderr)
+            np.savez_compressed(record, event_key=a.event_key, photon_id=a.photon_id[::-1], z_mm=z, status=np.zeros(len(z),int))
+            row["sha256"] = file_sha256(record)
+            (d/"run/summary.json").write_text(json.dumps(summary))
+            self.assertIn("alignment",subprocess.run(cmd,capture_output=True,text=True).stderr)
+            self.assertFalse((d/"plots").exists())
+
+    def test_plot_cli_writes_three_individual_figures(self):
+        import importlib.util
+        if importlib.util.find_spec("matplotlib") is None:
+            self.skipTest("Optional matplotlib not installed")
+        from dsipm.io import file_sha256
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            a, c, z, _ = fixture("eval",events=2,n=8)
+            save_cache(d/"cache",a,c,provenance={"timestamp_sigma_ns":0},truth_z_mm=z)
+            _, _, _, meta = load_cache(d/"cache")
+            (d/"run").mkdir()
+            result=d/"run/radius_50ps_draw0.npz"
+            np.savez_compressed(result,event_key=a.event_key,photon_id=a.photon_id,z_mm=z,status=np.zeros(len(z),int))
+            (d/"run/summary.json").write_text(json.dumps(dict(source_cache=meta,results=[dict(name=result.stem,
+                sha256=file_sha256(result),options=dict(method="radius",sigma_t_ns=.05))])))
+            cmd=[sys.executable,str(REPO/"studyDepthReconstruction.py"),"plot","--input",str(d/"cache"),
+                 "--run",str(d/"run"),"--output",str(d/"plots"),"--label","synthetic test","--sigma-ps","50"]
+            subprocess.run(cmd,check=True,capture_output=True,text=True)
+            self.assertEqual(len(list((d/"plots").rglob("*.pdf"))),3)
+            self.assertEqual(len(list((d/"plots").rglob("*.png"))),3)
+            self.assertNotEqual(subprocess.run(cmd,capture_output=True).returncode,0)
 
     def test_unvalidated_truth_cannot_be_trained_by_cli(self):
         with TemporaryDirectory() as d:

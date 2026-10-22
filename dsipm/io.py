@@ -95,8 +95,8 @@ def corrected_event_from_arrays(arrays, contract):
     points = np.column_stack([data["OP_pos_final_"+a][ids] for a in "xyz"])*10
     local, sensor, rods, sensor_ids, _ = localize_endpoints(points, fiber[ids])
     birth = world_to_calorimeter(np.column_stack([data["OP_pos_produced_"+a][ids] for a in "xyz"])*10)
-    if np.any(np.linalg.norm(birth[:, :2]-sensor, axis=1) > .40001):
-        raise ValueError("Production point not in localized physical fiber")
+    if np.any(np.linalg.norm(birth[:, :2]-sensor, axis=1) > contract.core_radius_mm+1e-5):
+        raise ValueError("Production point not in localized physical core")
     depth = birth[:, 2]+contract.length_mm/2
     if np.any((depth < -1e-5) | (depth > contract.length_mm+1e-5)):
         raise ValueError("Production depth outside detector")
