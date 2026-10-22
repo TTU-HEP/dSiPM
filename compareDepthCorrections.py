@@ -288,11 +288,12 @@ def plot(directory, target, plan):
     cmap.set_bad('white'); ze = h['z_edges_mm']/10
     si = plan['sigmas_ps'].index(50)
     fig, axes = plt.subplots(2,3,figsize=(14.5,10),layout=None)
-    fig.subplots_adjust(left=.065,right=.90,bottom=.08,top=.88,wspace=.27,hspace=.32)
+    fig.subplots_adjust(left=.065,right=.90,bottom=.08,top=.855,wspace=.27,hspace=.32)
     fig.text(.065,.962,'FLASH',weight='bold',fontsize=20)
     fig.text(.145,.962,'Simulation Preliminary',style='italic',fontsize=16)
     fig.text(.94,.962,'100 GeV pion; 50 ps/photon; exact entrance clock',ha='right',fontsize=12)
     fig.text(.065,.917,'Same 5,000 events and accepted photons; five-fold source-file holdout',fontsize=12)
+    fig.text(.065,.888,'Learned panels predict an in-range depth median; this is not a validated optical-path inversion.',fontsize=11)
     for mi, ax in enumerate(axes.flat):
         p = np.divide(100*h['response'][mi,si],h['denominator'][mi,si,:,None],
                       out=np.zeros_like(h['response'][mi,si],float),where=h['denominator'][mi,si,:,None]>0)
@@ -301,7 +302,8 @@ def plot(directory, target, plan):
         ax.set(xlim=(0,200),ylim=(0,200),xlabel='True photon-production Z [cm]',ylabel='Reconstructed Z [cm]')
         ax.set_box_aspect(1); ax.minorticks_on(); ax.tick_params(labelsize=10)
         case = s['cases'][METHODS[mi]+'_50ps']
-        ax.set_title(LABELS[mi]+'\n'+f"Within 10 cm: {case['within10cm_pct']:.1f}%; failed: {case['failure_pct']:.1f}%",fontsize=12,pad=8)
+        note = f"range failures: {case['failure_pct']:.1f}%" if mi==0 else 'in-range median'
+        ax.set_title(LABELS[mi]+'\n'+f"Within 10 cm: {case['within10cm_pct']:.1f}%; "+note,fontsize=11,pad=8)
     cax = fig.add_axes([.925,.18,.014,.61]);fig.colorbar(im,cax=cax).set_label('All inputs per true-Z bin [% / 1 cm reco bin]',weight='bold')
     def save(fig,name):
         for ext in ('pdf','png'): fig.savefig(target/(name+'.'+ext),dpi=180,facecolor='white')
@@ -335,6 +337,7 @@ def plot(directory, target, plan):
                 c=s['cases'][name+'_'+str(t)+'ps'];writer.writerow([name,t,c['input'],c['within10cm_pct'],*c['stat95'][2],
                     c['failure_pct'],c['paired_gain_vs_axial_pp'],*c['paired_gain_stat95'],c['paired_gain_vs_time_pp'],*c['paired_gain_vs_time_stat95']])
     (target/'plot_manifest.json').write_text(json.dumps(dict(source_summary_sha256=file_sha256(directory/'summary.json'),
+        plotter_sha256=file_sha256(__file__),
         plan_sha256=plan['_sha256'],files_sha256={p.name:file_sha256(p) for p in target.iterdir()}),indent=2)+'\n')
 
 
