@@ -566,7 +566,7 @@ def plot_methods(directory,target,plan):
         plt.close(fig)
     for ids,title,name in [(range(6),'Actual timing inversion and corrections 1-3','actual_methods_Z_truth_vs_reconstructed_50ps'),
                            (range(6,11),'Empirical Z-lookup controls - NOT corrections 1-3','empirical_controls_Z_truth_vs_reconstructed_50ps')]:
-        fig,axes=plt.subplots(2,3,figsize=(14.5,10));fig.subplots_adjust(left=.065,right=.90,bottom=.08,top=.855,wspace=.27,hspace=.32)
+        fig,axes=plt.subplots(2,3,figsize=(14.5,10));fig.subplots_adjust(left=.065,right=.90,bottom=.08,top=.815,wspace=.27,hspace=.36)
         fig.text(.065,.962,'FLASH',weight='bold',fontsize=20);fig.text(.145,.962,'Simulation Preliminary',style='italic',fontsize=16)
         fig.text(.94,.962,'100 GeV pion; 50 ps/photon; exact entrance clock',ha='right',fontsize=12)
         fig.text(.065,.917,title+'; same 5,000 events',fontsize=12)
@@ -577,7 +577,7 @@ def plot_methods(directory,target,plan):
             ax.plot([0,200],[0,200],'--',color='#ce007a',lw=1.1)
             ax.set(xlim=(0,200),ylim=(0,200),xlabel='True photon-production Z [cm]',ylabel='Reconstructed Z [cm]')
             ax.set_box_aspect(1);ax.minorticks_on();ax.tick_params(labelsize=10)
-            c=s['cases'][TIMING_METHODS[mi]+'_50ps'];note=f"range failures: {c['failure_pct']:.1f}%" if mi<6 else 'in-range median'
+            c=s['cases'][TIMING_METHODS[mi]+'_50ps'];note=f"failed: {c['failure_pct']:.2f}%" if mi<6 else 'in-range median'
             ax.set_title(short[mi]+'\n'+f"Within 10 cm: {c['within10cm_pct']:.1f}%; "+note,fontsize=11,pad=8)
         if len(ids)<6:axes.flat[-1].set_visible(False)
         cax=fig.add_axes([.925,.18,.014,.61]);fig.colorbar(im,cax=cax).set_label('All inputs per true-Z bin [% / 1 cm reco bin]',weight='bold')
@@ -587,6 +587,7 @@ def plot_methods(directory,target,plan):
         cs=[s['cases'][TIMING_METHODS[mi]+f'_{t}ps'] for t in plan['sigmas_ps']];limits=np.array([c['stat95'][2] for c in cs])
         ax.fill_between(plan['sigmas_ps'],limits[:,0],limits[:,1],color=colors[mi],alpha=.13)
         ax.plot(plan['sigmas_ps'],[c['within10cm_pct'] for c in cs],marker='o',ls='--' if mi in (1,5,10) else '-',color=colors[mi],label=short[mi],ms=4)
+    ax.set_xticks(plan['sigmas_ps'])
     ax.set(ylim=(0,100),ylabel='All accepted photons within 10 cm of true Z [%]');ax.legend(fontsize=8.5,loc='upper right')
     save(fig,'actual_methods_accuracy_vs_timing')
     fig,ax=_plot_axes('100 GeV pion\nEach added step versus the previous step\nPaired 95% file-bootstrap intervals','Assumed single-photon timing sigma [ps]',(-10,510))
@@ -595,6 +596,7 @@ def plot_methods(directory,target,plan):
         cs=[s['cases'][TIMING_METHODS[mi]+f'_{t}ps']['comparisons'][ref] for t in plan['sigmas_ps']];limits=np.array([c['stat95'] for c in cs])
         ax.fill_between(plan['sigmas_ps'],limits[:,0],limits[:,1],color=colors[mi],alpha=.18)
         ax.plot(plan['sigmas_ps'],[c['gain_pp'] for c in cs],'o-',color=colors[mi],label=label,ms=4)
+    ax.set_xticks(plan['sigmas_ps'])
     ax.set_ylabel('Change in within-10-cm fraction [percentage points]',fontsize=12);ax.legend(fontsize=9)
     save(fig,'actual_methods_incremental_gain')
     fig,ax=_plot_axes('100 GeV pion; 50 ps\nFailures stay in the denominator','Allowed absolute Z error [cm]',(0,200))
