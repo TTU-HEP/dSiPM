@@ -52,7 +52,8 @@ def extract(args):
             source_root_sha256=args.sha256, producer=metadata, sensor_seed=args.seed,
             timestamp_sigma_ns=0, entrance_time_ns=entrance, optical_transport_validated=False,
             truth_z_validation='source-profile endpoint/replica/core/depth containment; not exact birth-time truth',
-            scope='one configured sample rod/layer; recorded downstream Cherenkov-core exits only',
+            scope=('whole-detector' if detector.tracks_all_rods else 'one configured sample rod/layer')+
+                  '; recorded downstream Cherenkov-core exits only',
             analytical_arrival_times_used=False, records=rows))
     print('EXTRACTED', args.material, len(rows), len(photons.time_ns), contract.sha256)
 

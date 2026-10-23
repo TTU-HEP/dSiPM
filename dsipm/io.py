@@ -76,7 +76,8 @@ def upstream_event_from_arrays(arrays, contract, detector, material):
 
     Materials are separate reconstruction/calibration populations. Raw counts
     include all records so single-rod sampling cannot masquerade as full optical
-    coverage. Geant4 copy numbers independently cross-check localized endpoints.
+    coverage. Whole-detector scope requires the explicit source-verified -1/-1
+    configuration. Geant4 copies independently cross-check localized endpoints.
     """
     detector.check_contract(contract, material)
     data = {k: np.asarray(arrays[k]) for k in UPSTREAM_PHOTON_FIELDS}
@@ -95,7 +96,12 @@ def upstream_event_from_arrays(arrays, contract, detector, material):
         raise ValueError('Ambiguous plastic/quartz identity')
     core = data['OP_isCoreC' if material == 'plastic' else 'OP_isCoreQ'].astype(bool)
     wanted = core & data['OP_isCerenkov'].astype(bool)
-    sample = (data['OP_productionRod'] == detector.sample_rod_layer[0]) & (data['OP_productionLayer'] == detector.sample_rod_layer[1])
+    for name, limit in [('OP_productionRod', detector.n_rods), ('OP_productionLayer', detector.n_layers)]:
+        if np.any((data[name] < 0) | (data[name] >= limit)):
+            raise ValueError('Production replica outside source-defined detector')
+    sample = (np.ones(n, dtype=bool) if detector.tracks_all_rods else
+              (data['OP_productionRod'] == detector.sample_rod_layer[0]) &
+              (data['OP_productionLayer'] == detector.sample_rod_layer[1]))
     recorded = data['OP_time_final'] > 0
     if np.any(recorded & ~sample):
         raise ValueError('Recorded optical exit outside source-defined sample rod/layer')

@@ -812,6 +812,74 @@ std::fill_n(RefractiveIndex_HardPolymer, nEntries, 1.42);
             with self.assertRaisesRegex(ValueError, 'exact DREAMSim'):
                 next(iter_corrected_root('nonexistent', 'b'*64, c, detector=d))
 
+    @classmethod
+    def full_detector(cls):
+        sources, macro = cls.source_fixture()
+        sources['sim/src/CaloXSteppingAction.cc'] = (
+            'const bool isSampleRod = (opSampleRod == -1 && opSampleLayer == -1) || '
+            '(rodNumber == opSampleRod && layerNumber == opSampleLayer);')
+        macro = macro.replace('opSampleRod 45', 'opSampleRod -1').replace('opSampleLayer 40', 'opSampleLayer -1')
+        return DreamsimDetector.from_sources('b'*40, sources, macro)
+
+    def test_whole_detector_scope_requires_producer_and_both_explicit_sentinels(self):
+        d = self.full_detector()
+        self.assertTrue(d.tracks_all_rods)
+        self.assertEqual(d.sample_rod_layer, (-1, -1))
+        self.assertFalse(self.detector().tracks_all_rods)
+        self.assertNotEqual(d.contract()[0].sha256, self.detector().contract()[0].sha256)
+        sources, macro = self.source_fixture()
+        all_macro = macro.replace('opSampleRod 45', 'opSampleRod -1').replace('opSampleLayer 40', 'opSampleLayer -1')
+        with self.assertRaisesRegex(ValueError, 'does not implement whole-detector'):
+            DreamsimDetector.from_sources('b'*40, sources, all_macro)
+        for scope in [(-1, 40), (45, -1), (-2, -2), (90, 0), (0, 80)]:
+            with self.assertRaisesRegex(ValueError, 'sampling scope'):
+                replace(d, sample_rod_layer=scope)
+        sources['sim/src/CaloXSteppingAction.cc'] = 'const bool isSampleRod = true;'
+        with self.assertRaisesRegex(ValueError, 'Unsupported upstream explicit-optical scope'):
+            DreamsimDetector.from_sources('b'*40, sources, all_macro)
+
+    def test_whole_detector_reader_accepts_multiple_rods_and_checks_every_replica(self):
+        d, a = self.full_detector(), self.arrays()
+        # Four distinct rods including opposite detector corners. Keep physical
+        # exit/production coordinates and exported replica identities matched.
+        rods = np.array([[0, 0], [89, 79], [41, 43], [45, 40]])
+        ids = np.arange(8) % 4
+        a['OP_productionRod'] = rods[ids, 0]
+        a['OP_productionLayer'] = rods[ids, 1]
+        shifts = (rods[ids]-[45, 40])*4.
+        delta = np.column_stack([shifts, np.zeros(8)]) @ rotation()/10
+        for place in ['produced', 'final']:
+            for axis, name in enumerate('xyz'):
+                a['OP_pos_'+place+'_'+name] += delta[:, axis]
+        for kind in ['plastic', 'quartz']:
+            contract = d.contract(kind)[0]
+            event, selected, truth, counts = corrected_event_from_arrays(a, contract, detector=d, material=kind)
+            self.assertEqual(len(selected), 4)
+            self.assertEqual(counts['non_sample_core'], 0)
+            self.assertEqual(counts['downstream_before_gate'], 4)
+            np.testing.assert_array_equal(event.rod_ix+45, a['OP_productionRod'][selected])
+            np.testing.assert_array_equal(event.rod_iy+40, a['OP_productionLayer'][selected])
+            np.testing.assert_allclose(truth['truth_z_mm'], 1250.)
+        with self.assertRaisesRegex(ValueError, 'outside source-defined sample'):
+            corrected_event_from_arrays(a, self.detector().contract()[0], detector=self.detector())
+        bad = {k:v.copy() for k,v in a.items()}
+        bad['OP_productionRod'][0] = 90
+        with self.assertRaisesRegex(ValueError, 'replica outside'):
+            corrected_event_from_arrays(bad, d.contract()[0], detector=d)
+
+    def test_single_scope_retains_selection_with_whole_capable_producer(self):
+        sources, macro = self.source_fixture()
+        sources['sim/src/CaloXSteppingAction.cc'] = (
+            'const bool isSampleRod = (opSampleRod == -1 && opSampleLayer == -1) || '
+            '(rodNumber == opSampleRod && layerNumber == opSampleLayer);')
+        single = DreamsimDetector.from_sources('b'*40, sources, macro)
+        self.assertFalse(single.tracks_all_rods)
+        a = self.arrays()
+        event, selected, truth, counts = corrected_event_from_arrays(a, single.contract()[0], detector=single)
+        self.assertEqual(len(selected), 4)
+        self.assertEqual(counts['non_sample_core'], 0)
+        np.testing.assert_allclose(truth['truth_z_mm'], 1250.)
+
     def test_source_pinned_root_extract_cache_and_cross_material_rejection(self):
         import os
         from unittest.mock import patch

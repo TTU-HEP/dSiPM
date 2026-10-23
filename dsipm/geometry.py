@@ -50,12 +50,16 @@ class DreamsimDetector:
             raise ValueError('Need unique source-file hashes')
         numeric = [self.length_mm, self.rod_pitch_mm, self.hole_radius_mm,
                    self.core_radius_mm, self.outer_radius_mm, *self.rotation_deg, *self.gun_world_mm]
+        scope = self.sample_rod_layer
+        valid_scope = (len(scope) == 2 and all(isinstance(n, int) for n in scope) and
+                       all(isinstance(n, int) for n in (self.n_rods, self.n_layers)) and
+                       (tuple(scope) == (-1, -1) or
+                        (0 <= scope[0] < self.n_rods and 0 <= scope[1] < self.n_layers)))
         if (not np.isfinite(numeric).all() or min(numeric[:5]) <= 0 or
                 not 0 < self.core_radius_mm <= self.outer_radius_mm < self.hole_radius_mm or
                 any(not isinstance(n, int) or n <= 0 or n % 2 for n in (self.n_rods, self.n_layers)) or
                 len(self.rotation_deg) != 2 or len(self.gun_world_mm) != 3 or
-                len(self.sample_rod_layer) != 2 or any(not isinstance(n, int) for n in self.sample_rod_layer) or
-                not (0 <= self.sample_rod_layer[0] < self.n_rods and 0 <= self.sample_rod_layer[1] < self.n_layers)):
+                not valid_scope):
             raise ValueError('Invalid upstream detector dimensions or sampling scope')
         if len(self.fibers) != 7 or len({(f[0], f[1]) for f in self.fibers}) != 7:
             raise ValueError('Need seven distinct material/copy identities')
@@ -76,6 +80,11 @@ class DreamsimDetector:
     @property
     def sha256(self):
         return digest(asdict(self))
+
+    @property
+    def tracks_all_rods(self):
+        """Explicit producer opt-in, never inferred from available birth records."""
+        return tuple(self.sample_rod_layer) == (-1, -1)
 
     @classmethod
     def from_checkout(cls, checkout, macro=None):
@@ -173,8 +182,13 @@ class DreamsimDetector:
         sample = [parameter('opSampleRod'), parameter('opSampleLayer')]
         if any(v != int(v) for v in sample):
             raise ValueError('Nonintegral sampling rod/layer')
-        if not re.search(r'isSampleRod\s*=\s*\(rodNumber\s*==\s*opSampleRod\s*&&\s*layerNumber\s*==\s*opSampleLayer\)', step):
+        policy = re.sub(r'\s+', '', one(r'\bconst\s+bool\s+isSampleRod\s*=\s*([^;]+);', text=step))
+        single = '(rodNumber==opSampleRod&&layerNumber==opSampleLayer)'
+        full = '(opSampleRod==-1&&opSampleLayer==-1)||'+single
+        if policy not in (single, full):
             raise ValueError('Unsupported upstream explicit-optical scope')
+        if sample == [-1, -1] and policy != full:
+            raise ValueError('This producer does not implement whole-detector optical tracking')
         return cls(revision, tuple(sorted((p, hashlib.sha256(s.encode()).hexdigest()) for p, s in sources.items())),
             length, pitch, int(nr), int(nl), 5*scalar('holeDiameter', 'cm'), core, radius,
             tuple(fibers), optics, (parameter('caloRotationX'), parameter('caloRotationY')),

@@ -95,13 +95,29 @@ by the adjacent commented placement and previous geometry: **one line in one
 C++ file**. No detector redesign, tracking-window enlargement or transport
 rewrite is part of this migration.
 
-Only one configured rod/layer is explicitly tracked upstream. Other optical
-records carry birth/analytical information, not measured sensor arrivals.
-The new reader uses **only recorded downstream Cherenkov-core exits**, never
+The upstream default explicitly tracks one configured rod/layer. With the
+whole-detector-capable producer, set **both** `opSampleRod` and `opSampleLayer`
+to **-1** in the actual run macro to track optical photons in all 90 x 80 rods.
+The source parser verifies that this producer implements the opt-in; the old
+single-rod source cannot be relabelled as whole-detector data. Mixed negative
+indices are invalid. Scope changes invalidate calibration compatibility.
+`detector.tracks_all_rods` records this source-derived distinction.
+
+Generate the complete event with all rods tracked together for a whole-detector
+Z study. The neighbour estimator then receives observed light from adjacent
+rods in the **same event**; combining unrelated single-rod simulations is not an
+equivalent test. Plastic and quartz remain separate calibration/evaluation
+populations. Sensor holdoff remains per fiber, not one shared detector-wide SPAD.
+
+In single-rod runs, other optical records carry birth/analytical information,
+not measured sensor arrivals. The reader uses **only recorded downstream Cherenkov-core exits**, never
 `OP_analyticalArrivalTime_*`. It separates plastic and quartz, cross-checks
 endpoint localization against exported replica IDs, preserves original photon
 IDs, and accounts separately for unrecorded, non-downstream, outside-gate and
-selected records. It must not be described as all-detector optical performance.
+selected records. Single-rod products must not be described as all-detector
+optical performance. Whole-detector transport is a simulation scope, not proof
+of accurate depth inference or validated end-face/sensor coupling. Benchmark a
+small run before scaling: all-rod optical transport can be substantially slower.
 
 Run extraction under Slurm with a producer ledger binding `root_sha256`,
 `producer_revision`, `detector_sha256` and `run_macro_sha256` to the actual
